@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes>
+    <!-- Vehicle types -->
+    <vType id="car" accel="2.6" decel="4.5" sigma="0.5" length="5" maxSpeed="30" color="1,1,0"/>
+    <vType id="bus" accel="1.2" decel="3.0" sigma="0.2" length="12" maxSpeed="20" color="1,0.5,0"/>
+    <vType id="ev" accel="3.0" decel="5.0" sigma="0.3" length="5" maxSpeed="30" color="0,1,0">
+        <param key="has.battery.device" value="true"/>
+        <param key="battery.capacity" value="60"/>
+    </vType>
+    
+    <!-- Routes -->
+    <route id="route0" edges="e0 e1 e10 e11"/>
+    <route id="route1" edges="e12 e13 e14 e15"/>
+    <route id="route2" edges="e0 e1 e10 e11"/>
+    
+    <!-- Vehicle flows -->
+    <flow id="flow_cars" type="car" route="route0" begin="0" end="3600" vehsPerHour="50"/>
+    <flow id="flow_evs" type="ev" route="route1" begin="0" end="3600" vehsPerHour="15"/>
+    <flow id="flow_buses" type="bus" route="route2" begin="0" end="3600" vehsPerHour="5"/>
+</routes>

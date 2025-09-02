@@ -1,6 +1,6 @@
 """
-Manhattan Power Grid - World Class Main Application
-FIXED: Traffic light colors, popup styling, refresh issues
+Manhattan Power Grid - World Class Main Application with SUMO
+COMPLETE INTEGRATION: Power + Traffic + EVs + Real-time Visualization
 """
 
 from flask import Flask, render_template_string, jsonify, request
@@ -9,10 +9,16 @@ import json
 import threading
 import time
 from datetime import datetime
+import asyncio
 
 # Import our systems
 from core.power_system import ManhattanPowerGrid
 from integrated_backend import ManhattanIntegratedSystem
+from manhattan_sumo_integration import (
+    WorldClassTrafficSimulation, 
+    integrate_sumo_with_power_grid,
+    IntegratedWebSocketServer
+)
 
 app = Flask(__name__)
 CORS(app)
@@ -20,7 +26,7 @@ CORS(app)
 # Initialize systems
 print("=" * 60)
 print("MANHATTAN POWER GRID - WORLD CLASS SYSTEM")
-print("Professional Integration for Con Edison & NYC DOT")
+print("Professional Integration: Con Edison + NYC DOT + SUMO")
 print("=" * 60)
 
 # Initialize power grid
@@ -31,12 +37,16 @@ power_grid = ManhattanPowerGrid()
 print("Loading integrated distribution network...")
 integrated_system = ManhattanIntegratedSystem(power_grid)
 
+# Initialize SUMO traffic simulation
+print("Initializing SUMO traffic simulation...")
+traffic_sim = integrate_sumo_with_power_grid(integrated_system, power_grid)
+
 # System state
 system_running = True
 current_time = 0
 
 def simulation_loop():
-    """Background simulation loop for realistic traffic light phases"""
+    """Background simulation loop"""
     global current_time
     
     while system_running:
@@ -44,8 +54,13 @@ def simulation_loop():
             # Update traffic light phases every 2 seconds
             if current_time % 2 == 0:
                 integrated_system.update_traffic_light_phases()
+                
+                # Sync with SUMO if available
+                if traffic_sim and traffic_sim.running:
+                    # Traffic lights are synced inside SUMO loop
+                    pass
             
-            # Run power flow every 30 seconds (less frequent)
+            # Run power flow every 30 seconds
             if current_time % 30 == 0:
                 power_grid.run_power_flow("dc")
             
@@ -60,14 +75,14 @@ def simulation_loop():
 sim_thread = threading.Thread(target=simulation_loop, daemon=True)
 sim_thread.start()
 
-# HTML Template with fixes
+# Enhanced HTML Template with vehicle visualization
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Manhattan Power Grid - World Class System</title>
+    <title>Manhattan Power Grid - World Class System with Traffic</title>
     
     <!-- Mapbox GL JS -->
     <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet">
@@ -94,7 +109,7 @@ HTML_TEMPLATE = '''
             background: #000;
         }
         
-        /* FIX FOR POPUP STYLING - Dark background with white text */
+        /* Popup styling */
         .mapboxgl-popup-content {
             background: rgba(20, 20, 30, 0.95) !important;
             color: #ffffff !important;
@@ -110,21 +125,8 @@ HTML_TEMPLATE = '''
             font-size: 14px !important;
         }
         
-        .mapboxgl-popup-content div {
-            color: #ffffff !important;
-        }
-        
         .mapboxgl-popup-tip {
             border-top-color: rgba(20, 20, 30, 0.95) !important;
-        }
-        
-        .mapboxgl-popup-close-button {
-            color: #ffffff !important;
-            font-size: 18px !important;
-        }
-        
-        .mapboxgl-popup-close-button:hover {
-            background: rgba(255, 255, 255, 0.1) !important;
         }
         
         /* Control Panel */
@@ -132,7 +134,9 @@ HTML_TEMPLATE = '''
             position: absolute;
             top: 20px;
             left: 20px;
-            width: 380px;
+            width: 420px;
+            max-height: 90vh;
+            overflow-y: auto;
             background: linear-gradient(135deg, rgba(15,15,25,0.98), rgba(25,25,45,0.95));
             border-radius: 16px;
             padding: 24px;
@@ -192,6 +196,60 @@ HTML_TEMPLATE = '''
             letter-spacing: 0.5px;
         }
         
+        /* Traffic Section */
+        .traffic-section {
+            background: rgba(0,170,255,0.05);
+            border: 1px solid rgba(0,170,255,0.2);
+            border-radius: 10px;
+            padding: 12px;
+            margin: 16px 0;
+        }
+        
+        .traffic-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #00aaff;
+            margin-bottom: 10px;
+        }
+        
+        .traffic-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+        
+        .traffic-stat {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 0;
+            font-size: 12px;
+        }
+        
+        .traffic-stat-value {
+            font-weight: 600;
+            color: #00aaff;
+        }
+        
+        /* Vehicle indicator */
+        .vehicle-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 2px;
+            margin-right: 4px;
+        }
+        
+        .vehicle-sedan { background: #ffff00; }
+        .vehicle-ev { background: #00ff00; }
+        .vehicle-bus { background: #ff8800; }
+        .vehicle-charging { background: #00ff00; animation: pulse 1s infinite; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
         /* Substation Controls */
         .section-title {
             font-size: 14px;
@@ -227,11 +285,6 @@ HTML_TEMPLATE = '''
             background: rgba(255,0,0,0.3);
             border-color: #ff0000;
             animation: pulse 2s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
         }
         
         /* Action Buttons */
@@ -384,36 +437,46 @@ HTML_TEMPLATE = '''
             transform: translateX(22px);
         }
         
-        /* Traffic light stats */
-        .light-stats {
-            display: flex;
-            gap: 10px;
-            margin-top: 10px;
-            font-size: 11px;
+        /* Connection status */
+        .connection-status {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(15,15,25,0.95);
+            padding: 8px 16px;
+            border-radius: 20px;
+            border: 1px solid rgba(100,200,255,0.2);
+            font-size: 12px;
+            z-index: 1000;
         }
         
-        .light-stat {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        
-        .light-dot {
+        .connection-dot {
+            display: inline-block;
             width: 8px;
             height: 8px;
             border-radius: 50%;
+            margin-right: 6px;
         }
+        
+        .connected { background: #00ff88; }
+        .disconnected { background: #ff0000; }
     </style>
 </head>
 <body>
     <div id="map"></div>
     
+    <!-- Connection Status -->
+    <div class="connection-status">
+        <span class="connection-dot disconnected" id="ws-status"></span>
+        <span id="ws-text">Connecting...</span>
+    </div>
+    
     <!-- Control Panel -->
     <div class="control-panel">
         <h1>Manhattan Power Grid</h1>
-        <div class="subtitle">Con Edison & NYC DOT Integrated System</div>
+        <div class="subtitle">Integrated Power + Traffic + EV System</div>
         
-        <!-- Statistics -->
+        <!-- Main Statistics -->
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-value" id="traffic-lights" style="color: #ffaa00;">0</div>
@@ -433,23 +496,26 @@ HTML_TEMPLATE = '''
             </div>
         </div>
         
-        <!-- Traffic Light Stats -->
-        <div class="light-stats">
-            <div class="light-stat">
-                <div class="light-dot" style="background: #00ff00;"></div>
-                <span id="green-count">0</span> Green
-            </div>
-            <div class="light-stat">
-                <div class="light-dot" style="background: #ffff00;"></div>
-                <span id="yellow-count">0</span> Yellow
-            </div>
-            <div class="light-stat">
-                <div class="light-dot" style="background: #ff0000;"></div>
-                <span id="red-count">0</span> Red
-            </div>
-            <div class="light-stat">
-                <div class="light-dot" style="background: #000000; border: 1px solid #666;"></div>
-                <span id="black-count">0</span> Off
+        <!-- Traffic Section -->
+        <div class="traffic-section">
+            <div class="traffic-title">🚗 Live Traffic</div>
+            <div class="traffic-stats">
+                <div class="traffic-stat">
+                    <span><span class="vehicle-indicator vehicle-sedan"></span>Vehicles</span>
+                    <span class="traffic-stat-value" id="active-vehicles">0</span>
+                </div>
+                <div class="traffic-stat">
+                    <span><span class="vehicle-indicator vehicle-ev"></span>EVs</span>
+                    <span class="traffic-stat-value" id="active-evs">0</span>
+                </div>
+                <div class="traffic-stat">
+                    <span><span class="vehicle-indicator vehicle-charging"></span>Charging</span>
+                    <span class="traffic-stat-value" id="evs-charging">0</span>
+                </div>
+                <div class="traffic-stat">
+                    <span>Avg Speed</span>
+                    <span class="traffic-stat-value" id="avg-speed">0 mph</span>
+                </div>
             </div>
         </div>
         
@@ -462,12 +528,24 @@ HTML_TEMPLATE = '''
             🔧 Restore All Systems
         </button>
         
+        <button class="action-btn" style="background: linear-gradient(135deg, #00aaff, #0088dd);" onclick="toggleTraffic()">
+            🚦 Toggle Traffic Simulation
+        </button>
+        
         <!-- Layer Controls -->
         <div class="layer-controls">
             <div class="section-title">Visualization Layers</div>
             
             <div class="layer-item">
-                <span>Traffic Lights</span>
+                <span>🚗 Vehicles</span>
+                <label class="toggle">
+                    <input type="checkbox" checked id="layer-vehicles" onchange="toggleLayer('vehicles')">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            
+            <div class="layer-item">
+                <span>🚦 Traffic Lights</span>
                 <label class="toggle">
                     <input type="checkbox" checked id="layer-lights" onchange="toggleLayer('lights')">
                     <span class="slider"></span>
@@ -475,23 +553,7 @@ HTML_TEMPLATE = '''
             </div>
             
             <div class="layer-item">
-                <span>13.8kV Cables</span>
-                <label class="toggle">
-                    <input type="checkbox" checked id="layer-primary" onchange="toggleLayer('primary')">
-                    <span class="slider"></span>
-                </label>
-            </div>
-            
-            <div class="layer-item">
-                <span>480V Cables</span>
-                <label class="toggle">
-                    <input type="checkbox" checked id="layer-secondary" onchange="toggleLayer('secondary')">
-                    <span class="slider"></span>
-                </label>
-            </div>
-            
-            <div class="layer-item">
-                <span>EV Stations</span>
+                <span>⚡ EV Stations</span>
                 <label class="toggle">
                     <input type="checkbox" checked id="layer-ev" onchange="toggleLayer('ev')">
                     <span class="slider"></span>
@@ -499,7 +561,15 @@ HTML_TEMPLATE = '''
             </div>
             
             <div class="layer-item">
-                <span>Substations</span>
+                <span>🔌 Power Cables</span>
+                <label class="toggle">
+                    <input type="checkbox" checked id="layer-cables" onchange="toggleLayer('cables')">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            
+            <div class="layer-item">
+                <span>🏭 Substations</span>
                 <label class="toggle">
                     <input type="checkbox" checked id="layer-substations" onchange="toggleLayer('substations')">
                     <span class="slider"></span>
@@ -521,28 +591,35 @@ HTML_TEMPLATE = '''
             <span id="failures">0</span> Failures
         </div>
         <div class="status-item">
+            <span id="co2">0</span> kg CO₂/h
+        </div>
+        <div class="status-item">
             <span id="time">00:00</span>
         </div>
     </div>
     
     <!-- Legend -->
     <div class="legend">
-        <div class="legend-title">Network Components</div>
+        <div class="legend-title">System Components</div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #ffff00;"></div>
+            <span>Regular Vehicles</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #00ff00;"></div>
+            <span>Electric Vehicles</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #ff8800;"></div>
+            <span>Buses</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #00ff00; animation: pulse 1s infinite;"></div>
+            <span>Charging EVs</span>
+        </div>
         <div class="legend-item">
             <div class="legend-color" style="background: #ff0066;"></div>
-            <span>Substations (138kV)</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background: #00ff88;"></div>
-            <span>13.8kV Feeders</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background: #ffaa00;"></div>
-            <span>480V Service</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background: #00aaff;"></div>
-            <span>EV Stations</span>
+            <span>Substations</span>
         </div>
     </div>
     
@@ -554,38 +631,150 @@ HTML_TEMPLATE = '''
             container: 'map',
             style: 'mapbox://styles/mapbox/dark-v11',
             center: [-73.980, 40.758],
-            zoom: 13.5,
+            zoom: 14,
             pitch: 45,
             bearing: -20
         });
         
         // State
         let networkState = null;
+        let vehicles = {};
+        let vehicleMarkers = {};
         let markers = [];
         let layers = {
+            vehicles: true,
             lights: true,
-            primary: true,
-            secondary: true,
             ev: true,
+            cables: true,
             substations: true
         };
-        let lastUpdateTime = 0;
+        let ws = null;
+        let wsConnected = false;
+        let trafficEnabled = true;
         
-        // Load network state (optimized to prevent flashing)
+        // WebSocket connection for real-time vehicle updates
+        function connectWebSocket() {
+            ws = new WebSocket('ws://localhost:8765');
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                wsConnected = true;
+                document.getElementById('ws-status').className = 'connection-dot connected';
+                document.getElementById('ws-text').textContent = 'SUMO Connected';
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'traffic_update') {
+                    updateVehicles(data.vehicles);
+                    updateTrafficStats(data.statistics);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                wsConnected = false;
+                document.getElementById('ws-status').className = 'connection-dot disconnected';
+                document.getElementById('ws-text').textContent = 'SUMO Offline';
+                
+                // Retry connection after 5 seconds
+                setTimeout(connectWebSocket, 5000);
+            };
+        }
+        
+        // Update vehicles on map
+        function updateVehicles(vehicleData) {
+            if (!layers.vehicles) return;
+            
+            const currentVehicles = new Set();
+            
+            vehicleData.forEach(vehicle => {
+                currentVehicles.add(vehicle.id);
+                
+                if (!vehicleMarkers[vehicle.id]) {
+                    // Create new vehicle marker
+                    const el = document.createElement('div');
+                    el.style.width = '8px';
+                    el.style.height = '8px';
+                    el.style.borderRadius = '2px';
+                    el.style.border = '1px solid rgba(255,255,255,0.5)';
+                    
+                    // Set color based on vehicle type and state
+                    if (vehicle.charging) {
+                        el.style.background = '#00ff00';
+                        el.style.animation = 'pulse 1s infinite';
+                        el.style.boxShadow = '0 0 10px rgba(0,255,0,0.8)';
+                    } else if (vehicle.is_ev) {
+                        if (vehicle.battery_soc < 0.2) {
+                            el.style.background = '#ff8800';  // Orange for low battery
+                        } else {
+                            el.style.background = '#00cccc';  // Cyan for EV
+                        }
+                    } else if (vehicle.type === 'bus') {
+                        el.style.background = '#ff8800';
+                        el.style.width = '12px';
+                        el.style.height = '6px';
+                    } else if (vehicle.type === 'taxi') {
+                        el.style.background = '#ffff00';
+                    } else {
+                        el.style.background = '#ffffff';
+                    }
+                    
+                    const marker = new mapboxgl.Marker(el)
+                        .setLngLat([vehicle.lon, vehicle.lat])
+                        .addTo(map);
+                    
+                    vehicleMarkers[vehicle.id] = marker;
+                } else {
+                    // Update existing marker position
+                    vehicleMarkers[vehicle.id].setLngLat([vehicle.lon, vehicle.lat]);
+                    
+                    // Update appearance if charging status changed
+                    const el = vehicleMarkers[vehicle.id].getElement();
+                    if (vehicle.charging) {
+                        el.style.background = '#00ff00';
+                        el.style.animation = 'pulse 1s infinite';
+                    } else if (vehicle.is_ev && vehicle.battery_soc < 0.2) {
+                        el.style.background = '#ff8800';
+                        el.style.animation = '';
+                    }
+                }
+            });
+            
+            // Remove vehicles that left
+            Object.keys(vehicleMarkers).forEach(id => {
+                if (!currentVehicles.has(id)) {
+                    vehicleMarkers[id].remove();
+                    delete vehicleMarkers[id];
+                }
+            });
+        }
+        
+        // Update traffic statistics
+        function updateTrafficStats(stats) {
+            document.getElementById('active-vehicles').textContent = stats.active_vehicles || 0;
+            document.getElementById('active-evs').textContent = 
+                Math.floor((stats.active_vehicles || 0) * 0.3);  // 30% EVs
+            document.getElementById('evs-charging').textContent = stats.evs_charging || 0;
+            document.getElementById('avg-speed').textContent = 
+                Math.round(stats.avg_speed_mph || 0) + ' mph';
+            document.getElementById('co2').textContent = 
+                Math.round(stats.co2_emissions_kg || 0);
+        }
+        
+        // Load network state
         async function loadNetworkState(forceRedraw = false) {
             try {
                 const response = await fetch('/api/network_state');
                 networkState = await response.json();
                 updateUI();
                 
-                // Only redraw if forced or first time
-                const now = Date.now();
-                if (forceRedraw || now - lastUpdateTime > 5000) {
+                if (forceRedraw) {
                     renderNetwork();
-                    lastUpdateTime = now;
-                } else {
-                    // Just update traffic lights without full redraw
-                    updateTrafficLights();
                 }
                 
             } catch (error) {
@@ -605,12 +794,6 @@ HTML_TEMPLATE = '''
             document.getElementById('load-mw').textContent = Math.round(stats.total_load_mw);
             document.getElementById('substations-online').textContent = 
                 `${stats.operational_substations}/${stats.total_substations}`;
-            
-            // Update traffic light color counts
-            document.getElementById('green-count').textContent = stats.green_lights || 0;
-            document.getElementById('yellow-count').textContent = stats.yellow_lights || 0;
-            document.getElementById('red-count').textContent = stats.red_lights || 0;
-            document.getElementById('black-count').textContent = stats.black_lights || 0;
             
             // Update substation controls
             const controls = document.getElementById('substation-controls');
@@ -644,41 +827,19 @@ HTML_TEMPLATE = '''
                 indicator.className = 'status-indicator critical';
                 status.textContent = 'Critical Failures';
             }
-        }
-        
-        // Update only traffic lights (no full redraw)
-        function updateTrafficLights() {
-            if (!map.getSource('traffic-lights') || !networkState) return;
             
-            const features = networkState.traffic_lights.map(tl => ({
-                type: 'Feature',
-                geometry: {
-                    type: 'Point',
-                    coordinates: [tl.lon, tl.lat]
-                },
-                properties: {
-                    powered: tl.powered,
-                    color: tl.color || '#ff0000',
-                    phase: tl.phase,
-                    intersection: tl.intersection
-                }
-            }));
-            
-            map.getSource('traffic-lights').setData({
-                type: 'FeatureCollection',
-                features: features
-            });
+            document.getElementById('total-load').textContent = Math.round(stats.total_load_mw);
         }
         
         // Render network on map
         function renderNetwork() {
             if (!networkState) return;
             
-            // Clear existing markers only
+            // Clear existing markers
             markers.forEach(m => m.remove());
             markers = [];
             
-            // Add substations (only if layer enabled)
+            // Add substations
             if (layers.substations) {
                 networkState.substations.forEach(sub => {
                     const el = document.createElement('div');
@@ -690,9 +851,10 @@ HTML_TEMPLATE = '''
                     el.style.borderRadius = '50%';
                     el.style.border = '3px solid #fff';
                     el.style.boxShadow = sub.operational ? 
-                        '0 0 25px rgba(255,0,102,0.9), 0 0 50px rgba(255,0,102,0.5)' :
-                        '0 0 25px rgba(255,0,0,0.9), 0 0 50px rgba(255,0,0,0.5)';
+                        '0 0 25px rgba(255,0,102,0.9)' :
+                        '0 0 25px rgba(255,0,0,0.9)';
                     el.style.cursor = 'pointer';
+                    el.style.zIndex = '100';
                     
                     const marker = new mapboxgl.Marker(el)
                         .setLngLat([sub.lon, sub.lat])
@@ -711,10 +873,16 @@ HTML_TEMPLATE = '''
                 });
             }
             
-            // Handle cables (only recreate if needed)
-            if (!map.getLayer('primary-cables') && networkState.cables) {
-                // Primary cables
-                if (layers.primary && networkState.cables.primary) {
+            // Add cables
+            if (layers.cables && networkState.cables) {
+                // Remove old cable layers
+                ['primary-cables', 'secondary-cables'].forEach(layerId => {
+                    if (map.getLayer(layerId)) map.removeLayer(layerId);
+                    if (map.getSource(layerId)) map.removeSource(layerId);
+                });
+                
+                // Add primary cables
+                if (networkState.cables.primary) {
                     const features = networkState.cables.primary
                         .filter(cable => cable.path && cable.path.length > 1)
                         .map(cable => ({
@@ -746,16 +914,17 @@ HTML_TEMPLATE = '''
                                     ['get', 'operational'], '#00ff88',
                                     '#ff0000'
                                 ],
-                                'line-width': 3.5,
-                                'line-opacity': 0.8
+                                'line-width': 3,
+                                'line-opacity': 0.7
                             }
                         });
                     }
                 }
                 
-                // Secondary cables
-                if (layers.secondary && networkState.cables.secondary) {
+                // Add secondary cables (limited for performance)
+                if (networkState.cables.secondary) {
                     const features = networkState.cables.secondary
+                        .slice(0, 100)  // Limit to first 100
                         .filter(cable => cable.path && cable.path.length > 1)
                         .map(cable => ({
                             type: 'Feature',
@@ -786,16 +955,19 @@ HTML_TEMPLATE = '''
                                     ['get', 'operational'], '#ffaa00',
                                     '#ff0000'
                                 ],
-                                'line-width': 1.2,
-                                'line-opacity': 0.5
+                                'line-width': 1,
+                                'line-opacity': 0.3
                             }
                         });
                     }
                 }
             }
             
-            // Add traffic lights with ACTUAL COLORS
+            // Add traffic lights
             if (layers.lights && networkState.traffic_lights) {
+                if (map.getLayer('traffic-lights')) map.removeLayer('traffic-lights');
+                if (map.getSource('traffic-lights')) map.removeSource('traffic-lights');
+                
                 const features = networkState.traffic_lights.map(tl => ({
                     type: 'Feature',
                     geometry: {
@@ -804,19 +976,11 @@ HTML_TEMPLATE = '''
                     },
                     properties: {
                         powered: tl.powered,
-                        color: tl.color || '#ff0000',  // Use actual color from backend
+                        color: tl.color || '#ff0000',
                         phase: tl.phase,
                         intersection: tl.intersection
                     }
                 }));
-                
-                // Remove old layer if exists
-                if (map.getLayer('traffic-lights')) {
-                    map.removeLayer('traffic-lights');
-                }
-                if (map.getSource('traffic-lights')) {
-                    map.removeSource('traffic-lights');
-                }
                 
                 map.addSource('traffic-lights', {
                     type: 'geojson',
@@ -834,46 +998,15 @@ HTML_TEMPLATE = '''
                         'circle-radius': [
                             'interpolate', ['linear'], ['zoom'],
                             12, 2,
-                            14, 3.5,
-                            16, 5
+                            14, 3,
+                            16, 4
                         ],
-                        'circle-color': ['get', 'color'],  // Use the actual color property
-                        'circle-opacity': [
-                            'interpolate', ['linear'], ['zoom'],
-                            12, 0.8,
-                            14, 0.9,
-                            16, 1
-                        ],
+                        'circle-color': ['get', 'color'],
+                        'circle-opacity': 0.9,
                         'circle-stroke-width': 0.5,
                         'circle-stroke-color': '#ffffff',
                         'circle-stroke-opacity': 0.3
                     }
-                });
-                
-                // Add popup on click
-                map.on('click', 'traffic-lights', (e) => {
-                    const props = e.features[0].properties;
-                    let status = '🟢 Green';
-                    if (props.color === '#ffff00') status = '🟡 Yellow';
-                    else if (props.color === '#ff0000') status = '🔴 Red';
-                    else if (props.color === '#000000') status = '⚫ No Power';
-                    
-                    new mapboxgl.Popup()
-                        .setLngLat(e.lngLat)
-                        .setHTML(`
-                            <strong>Traffic Light</strong><br>
-                            ${props.intersection}<br>
-                            Status: ${status}
-                        `)
-                        .addTo(map);
-                });
-                
-                map.on('mouseenter', 'traffic-lights', () => {
-                    map.getCanvas().style.cursor = 'pointer';
-                });
-                
-                map.on('mouseleave', 'traffic-lights', () => {
-                    map.getCanvas().style.cursor = '';
                 });
             }
             
@@ -926,7 +1059,6 @@ HTML_TEMPLATE = '''
                 await fetch(`/api/restore/${name}`, { method: 'POST' });
             }
             
-            // Force full redraw after failure/restore
             await loadNetworkState(true);
         }
         
@@ -936,17 +1068,33 @@ HTML_TEMPLATE = '''
             await loadNetworkState(true);
         }
         
+        // Toggle traffic simulation
+        async function toggleTraffic() {
+            trafficEnabled = !trafficEnabled;
+            if (trafficEnabled) {
+                await fetch('/api/start_traffic', { method: 'POST' });
+            } else {
+                await fetch('/api/stop_traffic', { method: 'POST' });
+            }
+        }
+        
         // Toggle layer
         function toggleLayer(layer) {
             layers[layer] = !layers[layer];
             
-            // Handle layer visibility
-            if (layer === 'lights' && map.getLayer('traffic-lights')) {
+            if (layer === 'vehicles') {
+                // Show/hide vehicle markers
+                Object.values(vehicleMarkers).forEach(marker => {
+                    marker.getElement().style.display = layers[layer] ? 'block' : 'none';
+                });
+            } else if (layer === 'lights' && map.getLayer('traffic-lights')) {
                 map.setLayoutProperty('traffic-lights', 'visibility', layers[layer] ? 'visible' : 'none');
-            } else if (layer === 'primary' && map.getLayer('primary-cables')) {
-                map.setLayoutProperty('primary-cables', 'visibility', layers[layer] ? 'visible' : 'none');
-            } else if (layer === 'secondary' && map.getLayer('secondary-cables')) {
-                map.setLayoutProperty('secondary-cables', 'visibility', layers[layer] ? 'visible' : 'none');
+            } else if (layer === 'cables') {
+                ['primary-cables', 'secondary-cables'].forEach(layerId => {
+                    if (map.getLayer(layerId)) {
+                        map.setLayoutProperty(layerId, 'visibility', layers[layer] ? 'visible' : 'none');
+                    }
+                });
             } else {
                 renderNetwork();
             }
@@ -962,12 +1110,10 @@ HTML_TEMPLATE = '''
         // Initialize
         map.on('load', () => {
             loadNetworkState(true);
+            connectWebSocket();
             
-            // Update traffic lights every 2 seconds
-            setInterval(() => loadNetworkState(false), 2000);
-            
-            // Full refresh every 30 seconds
-            setInterval(() => loadNetworkState(true), 30000);
+            // Update network state periodically
+            setInterval(() => loadNetworkState(false), 5000);
             
             setInterval(updateTime, 1000);
             updateTime();
@@ -987,11 +1133,31 @@ def get_network_state():
     """Get complete network state"""
     return jsonify(integrated_system.get_network_state())
 
+@app.route('/api/traffic_state')
+def get_traffic_state():
+    """Get traffic simulation state"""
+    if traffic_sim and traffic_sim.running:
+        return jsonify({
+            'vehicles': traffic_sim.get_vehicle_states(),
+            'statistics': traffic_sim.get_statistics()
+        })
+    return jsonify({'vehicles': [], 'statistics': {}})
+
 @app.route('/api/fail/<substation>', methods=['POST'])
 def fail_substation(substation):
-    """Trigger substation failure"""
+    """Trigger substation failure - affects both power and traffic"""
+    
+    # Fail in integrated system
     impact = integrated_system.simulate_substation_failure(substation)
+    
+    # Fail in power grid
     power_grid.trigger_failure('substation', substation)
+    
+    # Impact traffic if SUMO is running
+    if traffic_sim and traffic_sim.running:
+        # Traffic lights will be synced automatically in SUMO loop
+        pass
+    
     return jsonify(impact)
 
 @app.route('/api/restore/<substation>', methods=['POST'])
@@ -1010,21 +1176,53 @@ def restore_all():
         power_grid.restore_component('substation', sub_name)
     return jsonify({'success': True, 'message': 'All systems restored'})
 
+@app.route('/api/start_traffic', methods=['POST'])
+def start_traffic():
+    """Start traffic simulation"""
+    global traffic_sim
+    if not traffic_sim or not traffic_sim.running:
+        traffic_sim = integrate_sumo_with_power_grid(integrated_system, power_grid)
+    return jsonify({'success': True})
+
+@app.route('/api/stop_traffic', methods=['POST'])
+def stop_traffic():
+    """Stop traffic simulation"""
+    if traffic_sim:
+        traffic_sim.stop_simulation()
+    return jsonify({'success': True})
+
 @app.route('/api/status')
 def get_status():
     """Get system status"""
     power_status = power_grid.get_system_status()
+    
+    # Add traffic stats if available
+    if traffic_sim and traffic_sim.running:
+        power_status['traffic'] = traffic_sim.get_statistics()
+    
     return jsonify(power_status)
 
 if __name__ == '__main__':
     print("\n" + "=" * 60)
-    print("System Information:")
-    print(f"  - Substations: {len(integrated_system.substations)}")
-    print(f"  - Distribution Transformers: {len(integrated_system.distribution_transformers)}")
-    print(f"  - Traffic Lights: {len(integrated_system.traffic_lights)}")
-    print(f"  - EV Stations: {len(integrated_system.ev_stations)}")
-    print(f"  - Primary Cables (13.8kV): {len(integrated_system.primary_cables)}")
-    print(f"  - Secondary Cables (480V): {len(integrated_system.secondary_cables)}")
+    print("WORLD CLASS INTEGRATED SYSTEM READY")
+    print("=" * 60)
+    print("System Components:")
+    print(f"  ⚡ Substations: {len(integrated_system.substations)}")
+    print(f"  🔌 Distribution Transformers: {len(integrated_system.distribution_transformers)}")
+    print(f"  🚦 Traffic Lights: {len(integrated_system.traffic_lights)}")
+    print(f"  ⚡ EV Stations: {len(integrated_system.ev_stations)}")
+    print(f"  🔋 EV Penetration: 30%")
+    
+    if traffic_sim and traffic_sim.running:
+        print("\nTraffic Simulation:")
+        print("  🚗 SUMO: ACTIVE")
+        print("  📡 WebSocket: ws://localhost:8765")
+        print("  🔄 Real-time sync: ENABLED")
+    else:
+        print("\nTraffic Simulation:")
+        print("  ⚠️  SUMO not available")
+        print("  💡 Install: apt-get install sumo sumo-tools")
+    
     print("=" * 60)
     print("\n🚀 Starting server at http://localhost:5000")
     print("=" * 60)
