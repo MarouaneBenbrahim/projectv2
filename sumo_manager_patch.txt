@@ -1,0 +1,42 @@
+"""
+sumo_manager_patch.py - Patches for better vehicle handling
+Apply this to your manhattan_sumo_manager.py
+"""
+
+# In the spawn_vehicles method, replace the vehicle type selection with:
+
+# Safe vehicle type selection (only use types that exist)
+SAFE_VEHICLE_TYPES = ["car", "taxi", "bus", "ev_sedan", "ev_suv"]
+
+if is_ev:
+    vtype = "ev_sedan" if random.random() < 0.6 else "ev_suv"
+else:
+    # Use only safe types
+    vtype = random.choice(["car", "taxi"])
+
+# For route generation, add validation:
+
+def _generate_realistic_route(self):
+    """Generate realistic Manhattan route with validation"""
+    
+    if not self.edges:
+        return []
+    
+    # Try multiple times to find connected edges
+    for attempt in range(10):
+        origin = random.choice(self.edges)
+        destination = random.choice(self.edges)
+        
+        if origin != destination:
+            # Validate edges exist
+            try:
+                if self.net.getEdge(origin) and self.net.getEdge(destination):
+                    return [origin, destination]
+            except:
+                pass
+    
+    # Fallback: use first two different edges
+    if len(self.edges) >= 2:
+        return [self.edges[0], self.edges[1]]
+    
+    return []

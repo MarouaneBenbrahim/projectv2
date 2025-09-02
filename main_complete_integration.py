@@ -766,52 +766,11 @@ HTML_COMPLETE_TEMPLATE = '''
             border-radius: 2px;
         }
         
-        .legend-vehicle {
-            width: 16px;
-            height: 16px;
-            border-radius: 3px;
-        }
-        
-        /* Vehicle Icon */
-        .vehicle-icon {
-            width: 20px;
-            height: 10px;
-            background: #00ff00;
-            border: 2px solid #fff;
-            border-radius: 3px;
-            position: relative;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        
-        .vehicle-icon::before {
-            content: '';
-            position: absolute;
-            top: -3px;
-            left: 2px;
-            right: 2px;
-            height: 4px;
-            background: rgba(255,255,255,0.3);
-            border-radius: 2px;
-        }
-        
-        .vehicle-icon.ev {
-            background: #00ff00;
-        }
-        
-        .vehicle-icon.gas {
-            background: #6464ff;
-        }
-        
-        .vehicle-icon.charging {
-            background: #ffa500;
-            animation: pulse 1s infinite;
-        }
-        
-        .vehicle-icon:hover {
-            transform: scale(1.5);
-            z-index: 1000;
+        .legend-circle {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 1.5px solid #fff;
         }
         
         .section-title {
@@ -1030,15 +989,15 @@ HTML_COMPLETE_TEMPLATE = '''
             <span>Service (480V)</span>
         </div>
         <div class="legend-item">
-            <div class="legend-vehicle" style="background: #00ff00; border: 2px solid #fff;"></div>
+            <div class="legend-circle" style="background: #00ff00;"></div>
             <span>Electric Vehicle</span>
         </div>
         <div class="legend-item">
-            <div class="legend-vehicle" style="background: #6464ff; border: 2px solid #fff;"></div>
+            <div class="legend-circle" style="background: #6464ff;"></div>
             <span>Gas Vehicle</span>
         </div>
         <div class="legend-item">
-            <div class="legend-vehicle" style="background: #ffa500; border: 2px solid #fff;"></div>
+            <div class="legend-circle" style="background: #ffa500;"></div>
             <span>Charging EV</span>
         </div>
         <div class="legend-item">
@@ -1063,7 +1022,8 @@ HTML_COMPLETE_TEMPLATE = '''
         // State
         let networkState = null;
         let markers = [];
-        let vehicleMarkers = {};
+        let vehicleMarkers = {};  // Keep for cleanup but won't use for new vehicles
+        let vehicleLayerInitialized = false;
         let layers = {
             lights: true,
             vehicles: true,
@@ -1072,7 +1032,6 @@ HTML_COMPLETE_TEMPLATE = '''
             ev: true
         };
         let sumoRunning = false;
-        // New: persistent marker registries and init flags to avoid flicker
         let substationMarkers = {};
         let evStationMarkers = {};
         let sourcesInitialized = false;
@@ -1099,20 +1058,17 @@ HTML_COMPLETE_TEMPLATE = '''
             
             const stats = networkState.statistics;
             
-            // Update main stats
             document.getElementById('traffic-lights').textContent = stats.total_traffic_lights;
             document.getElementById('powered-lights').textContent = stats.powered_traffic_lights;
             document.getElementById('load-mw').textContent = Math.round(stats.total_load_mw);
             document.getElementById('substations-online').textContent = 
                 `${stats.operational_substations}/${stats.total_substations}`;
             
-            // Update traffic light color counts
             document.getElementById('green-count').textContent = stats.green_lights || 0;
             document.getElementById('yellow-count').textContent = stats.yellow_lights || 0;
             document.getElementById('red-count').textContent = stats.red_lights || 0;
             document.getElementById('black-count').textContent = stats.black_lights || 0;
             
-            // Vehicle stats
             if (networkState.vehicle_stats) {
                 document.getElementById('active-vehicles').textContent = (networkState.vehicles || []).length;
                 document.getElementById('ev-count').textContent = networkState.vehicle_stats.ev_vehicles || 0;
@@ -1130,7 +1086,6 @@ HTML_COMPLETE_TEMPLATE = '''
             
             document.getElementById('total-load').textContent = Math.round(stats.total_load_mw);
             
-            // Create substation buttons if not exists
             const controls = document.getElementById('substation-controls');
             if (controls.children.length === 0) {
                 networkState.substations.forEach(sub => {
@@ -1143,7 +1098,6 @@ HTML_COMPLETE_TEMPLATE = '''
                 });
             }
             
-            // Update substation button states
             networkState.substations.forEach(sub => {
                 const btn = document.getElementById(`sub-btn-${sub.name}`);
                 if (btn) {
@@ -1155,7 +1109,6 @@ HTML_COMPLETE_TEMPLATE = '''
                 }
             });
             
-            // Update system status
             const failures = stats.total_substations - stats.operational_substations;
             const indicator = document.getElementById('system-indicator');
             const status = document.getElementById('system-status');
@@ -1172,11 +1125,143 @@ HTML_COMPLETE_TEMPLATE = '''
             }
         }
         
+        // Initialize vehicle layer (call once)
+        function initializeVehicleLayer() {
+            if (vehicleLayerInitialized) return;
+            
+            // Add GeoJSON source for vehicles
+            map.addSource('vehicles', {
+                type: 'geojson',
+                data: {
+                    type: 'FeatureCollection',
+                    features: []
+                }
+            });
+            
+            // Add vehicle layer - circles that stay on the map
+            map.addLayer({
+                id: 'vehicles-layer',
+                type: 'circle',
+                source: 'vehicles',
+                paint: {
+                    'circle-radius': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        12, 3,
+                        14, 5,
+                        16, 7,
+                        18, 10
+                    ],
+                    'circle-color': ['get', 'color'],
+                    'circle-opacity': 0.9,
+                    'circle-stroke-width': 1.5,
+                    'circle-stroke-color': '#ffffff',
+                    'circle-stroke-opacity': 0.8
+                }
+            });
+            
+            // Add click handler for vehicle info
+            map.on('click', 'vehicles-layer', (e) => {
+                const props = e.features[0].properties;
+                
+                new mapboxgl.Popup()
+                    .setLngLat(e.lngLat)
+                    .setHTML(`
+                        <strong>Vehicle ${props.id}</strong><br>
+                        Type: ${props.type}<br>
+                        Speed: ${props.speed_kmh} km/h<br>
+                        ${props.is_ev ? `Battery: ${props.battery_percent}%` : 'Gas Vehicle'}<br>
+                        ${props.is_charging ? '🔌 Charging at ' + props.assigned_station : ''}<br>
+                        Distance: ${props.distance_traveled} m<br>
+                        Wait time: ${props.waiting_time}s<br>
+                        On road: ${props.edge || 'unknown'}
+                    `)
+                    .addTo(map);
+            });
+            
+            // Change cursor on hover
+            map.on('mouseenter', 'vehicles-layer', () => {
+                map.getCanvas().style.cursor = 'pointer';
+            });
+            
+            map.on('mouseleave', 'vehicles-layer', () => {
+                map.getCanvas().style.cursor = '';
+            });
+            
+            vehicleLayerInitialized = true;
+        }
+        
+        // Clean up old vehicle markers
+        function cleanupOldVehicleMarkers() {
+            for (const [id, marker] of Object.entries(vehicleMarkers)) {
+                marker.remove();
+            }
+            vehicleMarkers = {};
+        }
+        
+        // Render vehicles using GeoJSON layer (FIXED)
+        function renderVehicles() {
+            if (!networkState || !networkState.vehicles) {
+                if (map.getLayer('vehicles-layer')) {
+                    map.setLayoutProperty('vehicles-layer', 'visibility', 'none');
+                }
+                return;
+            }
+            
+            // Initialize layer if needed
+            if (!vehicleLayerInitialized && map.loaded()) {
+                initializeVehicleLayer();
+            }
+            
+            if (!map.getSource('vehicles')) return;
+            
+            // Show/hide vehicle layer based on toggle
+            if (map.getLayer('vehicles-layer')) {
+                map.setLayoutProperty('vehicles-layer', 'visibility', layers.vehicles ? 'visible' : 'none');
+            }
+            
+            // Convert vehicles to GeoJSON features
+            const features = networkState.vehicles.map(vehicle => ({
+                type: 'Feature',
+                geometry: {
+                    type: 'Point',
+                    coordinates: [vehicle.lon, vehicle.lat]
+                },
+                properties: {
+                    id: vehicle.id,
+                    type: vehicle.type,
+                    speed_kmh: vehicle.speed_kmh || 0,
+                    is_ev: vehicle.is_ev || false,
+                    is_charging: vehicle.is_charging || false,
+                    battery_percent: vehicle.battery_percent || 100,
+                    color: vehicle.is_charging ? '#ffa500' :
+                           vehicle.is_ev ? '#00ff00' :
+                           vehicle.type === 'taxi' ? '#ffff00' :
+                           '#6464ff',
+                    angle: vehicle.angle || 0,
+                    edge: vehicle.edge || '',
+                    distance_traveled: vehicle.distance_traveled || 0,
+                    waiting_time: vehicle.waiting_time || 0,
+                    assigned_station: vehicle.assigned_station || ''
+                }
+            }));
+            
+            // Update the source data
+            const source = map.getSource('vehicles');
+            if (source) {
+                source.setData({
+                    type: 'FeatureCollection',
+                    features: features
+                });
+            }
+        }
+        
         // Render network
         function renderNetwork() {
             if (!networkState) return;
             
-            // Substations: create once, then update styles/popup if needed
+            // Substations
             const existingSubIds = new Set();
             networkState.substations.forEach(sub => {
                 existingSubIds.add(sub.name);
@@ -1188,22 +1273,13 @@ HTML_COMPLETE_TEMPLATE = '''
                     el.style.borderRadius = '50%';
                     el.style.border = '3px solid #fff';
                     el.style.cursor = 'pointer';
-                    const updateEl = () => {
-                        el.style.background = sub.operational ?
-                            'radial-gradient(circle, #ff0066 40%, #cc0052 100%)' :
-                            'radial-gradient(circle, #ff0000 40%, #aa0000 100%)';
-                        el.style.boxShadow = sub.operational ?
-                            '0 0 25px rgba(255,0,102,0.9)' :
-                            '0 0 25px rgba(255,0,0,0.9)';
-                    };
-                    updateEl();
                     marker = new mapboxgl.Marker(el)
                         .setLngLat([sub.lon, sub.lat])
                         .setPopup(new mapboxgl.Popup({offset: 25}))
                         .addTo(map);
                     substationMarkers[sub.name] = marker;
                 }
-                // Always update popup content and styling
+                
                 const el = substationMarkers[sub.name].getElement();
                 el.style.background = sub.operational ?
                     'radial-gradient(circle, #ff0066 40%, #cc0052 100%)' :
@@ -1221,7 +1297,7 @@ HTML_COMPLETE_TEMPLATE = '''
                     Coverage: ${sub.coverage_area}
                 `));
             });
-            // Remove substation markers that no longer exist
+            
             Object.keys(substationMarkers).forEach(name => {
                 if (!existingSubIds.has(name)) {
                     substationMarkers[name].remove();
@@ -1229,7 +1305,7 @@ HTML_COMPLETE_TEMPLATE = '''
                 }
             });
             
-            // EV stations: persistent markers; update content/styles
+            // EV stations
             const existingEvIds = new Set();
             if (layers.ev) {
                 networkState.ev_stations.forEach(ev => {
@@ -1249,18 +1325,13 @@ HTML_COMPLETE_TEMPLATE = '''
                         el.style.fontWeight = 'bold';
                         el.style.color = '#fff';
                         el.innerHTML = '⚡';
-                        const applyStyle = () => {
-                            el.style.background = ev.operational ? 'linear-gradient(135deg, #00aaff 0%, #0088dd 100%)' : '#666';
-                            el.style.boxShadow = ev.operational ? '0 2px 10px rgba(0,170,255,0.5)' : '0 2px 5px rgba(0,0,0,0.3)';
-                        };
-                        applyStyle();
                         marker = new mapboxgl.Marker(el)
                             .setLngLat([ev.lon, ev.lat])
                             .setPopup(new mapboxgl.Popup({offset: 25}))
                             .addTo(map);
                         evStationMarkers[ev.id] = marker;
                     }
-                    // Update popup and style
+                    
                     const el = evStationMarkers[ev.id].getElement();
                     el.style.background = ev.operational ? 'linear-gradient(135deg, #00aaff 0%, #0088dd 100%)' : '#666';
                     el.style.boxShadow = ev.operational ? '0 2px 10px rgba(0,170,255,0.5)' : '0 2px 5px rgba(0,0,0,0.3)';
@@ -1269,11 +1340,11 @@ HTML_COMPLETE_TEMPLATE = '''
                         Chargers: ${ev.chargers}<br>
                         Charging: ${charging}/${ev.chargers}<br>
                         Substation: ${ev.substation}<br>
-                        Status: <span style=\"color: ${ev.operational ? '#00ff88' : '#ff0000'}\">${ev.operational ? '✅ Online' : '❌ Offline'}</span>
+                        Status: <span style="color: ${ev.operational ? '#00ff88' : '#ff0000'}">${ev.operational ? '✅ Online' : '❌ Offline'}</span>
                     `));
                 });
             }
-            // Remove EV markers when layer off or missing
+            
             Object.keys(evStationMarkers).forEach(id => {
                 if (!layers.ev || !existingEvIds.has(id)) {
                     evStationMarkers[id].remove();
@@ -1281,7 +1352,7 @@ HTML_COMPLETE_TEMPLATE = '''
                 }
             });
             
-            // Build GeoJSON for cables
+            // Cables
             if (networkState.cables) {
                 if (networkState.cables.primary) {
                     const primaryFeatures = networkState.cables.primary
@@ -1311,6 +1382,7 @@ HTML_COMPLETE_TEMPLATE = '''
                         map.setLayoutProperty('primary-cables', 'visibility', layers.primary ? 'visible' : 'none');
                     }
                 }
+                
                 if (networkState.cables.secondary) {
                     const secondaryFeatures = (layers.secondary ? networkState.cables.secondary : [])
                         .filter(cable => cable.path && cable.path.length > 1)
@@ -1339,7 +1411,7 @@ HTML_COMPLETE_TEMPLATE = '''
                                     'Turtle Bay', '#aa66ff',
                                     'Columbus Circle', '#66ffaa',
                                     'Midtown East', '#ff66ff',
-                                    /* other */ '#ffaa00'
+                                    '#ffaa00'
                                 ],
                                 'line-width': 0.8,
                                 'line-opacity': ['case', ['get', 'operational'], 0.45, 0.15]
@@ -1352,7 +1424,7 @@ HTML_COMPLETE_TEMPLATE = '''
                 }
             }
             
-            // Traffic lights as a persistent source/layer with setData
+            // Traffic lights
             if (networkState.traffic_lights) {
                 const features = (layers.lights ? networkState.traffic_lights : []).map(tl => ({
                     type: 'Feature',
@@ -1407,73 +1479,6 @@ HTML_COMPLETE_TEMPLATE = '''
             }
         }
         
-        // Render vehicles with better icons
-        function renderVehicles() {
-            if (!networkState || !networkState.vehicles) return;
-            
-            networkState.vehicles.forEach(vehicle => {
-                let marker = vehicleMarkers[vehicle.id];
-                
-                if (!marker) {
-                    // Create new vehicle marker with better icon
-                    const el = document.createElement('div');
-                    el.className = 'vehicle-icon';
-                    
-                    // Set color based on vehicle state
-                    if (vehicle.is_charging) {
-                        el.classList.add('charging');
-                    } else if (vehicle.is_ev) {
-                        el.classList.add('ev');
-                    } else {
-                        el.classList.add('gas');
-                    }
-                    
-                    // Add direction indicator
-                    if (vehicle.speed > 0) {
-                        el.style.transform = `rotate(${Math.random() * 360}deg)`;
-                    }
-                    
-                    marker = new mapboxgl.Marker(el)
-                        .setLngLat([vehicle.lon, vehicle.lat])
-                        .setPopup(new mapboxgl.Popup({offset: 25}).setHTML(`
-                            <strong>Vehicle ${vehicle.id}</strong><br>
-                            Type: ${vehicle.type}<br>
-                            Speed: ${vehicle.speed_kmh} km/h<br>
-                            ${vehicle.is_ev ? `Battery: ${vehicle.battery_percent}%` : 'Gas Vehicle'}<br>
-                            ${vehicle.is_charging ? '🔌 Charging at ' + vehicle.assigned_station : ''}<br>
-                            Distance: ${vehicle.distance_traveled} m<br>
-                            Wait time: ${vehicle.waiting_time}s
-                        `))
-                        .addTo(map);
-                    
-                    vehicleMarkers[vehicle.id] = marker;
-                } else {
-                    // Update existing marker position smoothly
-                    marker.setLngLat([vehicle.lon, vehicle.lat]);
-                    
-                    // Update color based on state
-                    const el = marker.getElement();
-                    el.className = 'vehicle-icon';
-                    if (vehicle.is_charging) {
-                        el.classList.add('charging');
-                    } else if (vehicle.is_ev) {
-                        el.classList.add('ev');
-                    } else {
-                        el.classList.add('gas');
-                    }
-                }
-            });
-            
-            // Remove markers for vehicles that no longer exist
-            const currentVehicleIds = new Set(networkState.vehicles.map(v => v.id));
-            for (const [id, marker] of Object.entries(vehicleMarkers)) {
-                if (!currentVehicleIds.has(id)) {
-                    marker.remove();
-                    delete vehicleMarkers[id];
-                }
-            }
-        }
-        
         // Toggle layer visibility
         function toggleLayer(layer) {
             layers[layer] = !layers[layer];
@@ -1491,12 +1496,8 @@ HTML_COMPLETE_TEMPLATE = '''
                     map.setLayoutProperty('secondary-cables', 'visibility', layers[layer] ? 'visible' : 'none');
                 }
             } else if (layer === 'vehicles') {
-                if (!layers[layer]) {
-                    // Hide all vehicle markers
-                    for (const marker of Object.values(vehicleMarkers)) {
-                        marker.remove();
-                    }
-                    vehicleMarkers = {};
+                if (map.getLayer('vehicles-layer')) {
+                    map.setLayoutProperty('vehicles-layer', 'visibility', layers[layer] ? 'visible' : 'none');
                 }
             } else {
                 renderNetwork();
@@ -1538,11 +1539,13 @@ HTML_COMPLETE_TEMPLATE = '''
                 document.getElementById('spawn-btn').disabled = true;
                 document.getElementById('spawn10-btn').disabled = true;
                 
-                // Clear vehicle markers
-                for (const marker of Object.values(vehicleMarkers)) {
-                    marker.remove();
+                // Clear vehicle data
+                if (map.getSource('vehicles')) {
+                    map.getSource('vehicles').setData({
+                        type: 'FeatureCollection',
+                        features: []
+                    });
                 }
-                vehicleMarkers = {};
             }
         }
         
@@ -1571,7 +1574,6 @@ HTML_COMPLETE_TEMPLATE = '''
             
             const result = await response.json();
             if (result.success) {
-                // Update button states
                 document.querySelectorAll('.scenario-btn').forEach(btn => {
                     btn.classList.remove('active');
                 });
@@ -1606,7 +1608,6 @@ HTML_COMPLETE_TEMPLATE = '''
             await loadNetworkState();
         }
         
-        // Update time
         function updateTime() {
             const now = new Date();
             document.getElementById('time').textContent = 
@@ -1615,6 +1616,13 @@ HTML_COMPLETE_TEMPLATE = '''
         
         // Initialize
         map.on('load', () => {
+            // Initialize vehicle layer
+            initializeVehicleLayer();
+            
+            // Clean up any old markers
+            cleanupOldVehicleMarkers();
+            
+            // Load initial state
             loadNetworkState();
             
             // Update every 500ms for smooth vehicle movement

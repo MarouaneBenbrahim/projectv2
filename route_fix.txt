@@ -1,0 +1,100 @@
+# Add this to manhattan_sumo_manager.py, replacing the spawn_vehicles method
+
+def spawn_vehicles(self, count: int = 10, ev_percentage: float = 0.3) -> int:
+    """Spawn vehicles with validated routes"""
+    
+    if not self.running:
+        return 0
+    
+    import traci
+    spawned = 0
+    
+    # Use spawn edges from connected network if available
+    spawn_edges = getattr(self, 'spawn_edges', self.edges)
+    if not spawn_edges:
+        print("No valid spawn edges found")
+        return 0
+    
+    for i in range(count):
+        vehicle_id = f"veh_{self.stats['total_vehicles'] + i}"
+        
+        # Determine vehicle type
+        is_ev = random.random() < ev_percentage
+        
+        # Use only vehicle types that exist
+        if is_ev:
+            vtype = "ev_sedan" if random.random() < 0.6 else "ev_suv"
+        else:
+            vtype = random.choice(["car", "taxi"])  # Safe types only
+        
+        # Try to create a valid route
+        route_attempts = 0
+        route_created = False
+        
+        while route_attempts < 5 and not route_created:
+            try:
+                # Pick random edges
+                if len(spawn_edges) >= 2:
+                    origin_idx = random.randint(0, min(100, len(spawn_edges)-1))
+                    dest_idx = random.randint(0, min(100, len(spawn_edges)-1))
+                    
+                    if origin_idx != dest_idx:
+                        origin = spawn_edges[origin_idx]
+                        destination = spawn_edges[dest_idx]
+                        
+                        # Try to add route
+                        route_id = f"route_{vehicle_id}_{route_attempts}"
+                        traci.route.add(route_id, [origin, destination])
+                        
+                        # Try to add vehicle
+                        traci.vehicle.add(
+                            vehicle_id,
+                            route_id,
+                            typeID=vtype,
+                            depart="now"
+                        )
+                        
+                        # If we get here, it worked
+                        route_created = True
+                        
+                        # Initialize SOC
+                        initial_soc = 1.0
+                        
+                        # Set EV parameters
+                        if is_ev:
+                            battery_capacity = 75000 if vtype == "ev_sedan" else 100000
+                            initial_soc = random.uniform(0.3, 0.9)
+                            
+                            traci.vehicle.setParameter(vehicle_id, "device.battery.maximumBatteryCapacity", str(battery_capacity))
+                            traci.vehicle.setParameter(vehicle_id, "device.battery.actualBatteryCapacity", str(battery_capacity * initial_soc))
+                            traci.vehicle.setParameter(vehicle_id, "has.battery.device", "true")
+                        
+                        # Track vehicle
+                        self.vehicles[vehicle_id] = Vehicle(
+                            vehicle_id,
+                            VehicleConfig(
+                                id=vehicle_id,
+                                vtype=VehicleType[vtype.upper().replace("-", "_")],
+                                origin=origin,
+                                destination=destination,
+                                is_ev=is_ev,
+                                battery_capacity_kwh=75 if vtype == "ev_sedan" else (100 if vtype == "ev_suv" else 0),
+                                current_soc=initial_soc,
+                                route=[origin, destination]
+                            )
+                        )
+                        
+                        spawned += 1
+                        
+                        if is_ev:
+                            self.stats['ev_vehicles'] += 1
+                        
+            except Exception as e:
+                # This route didn't work, try another
+                route_attempts += 1
+                if route_attempts >= 5:
+                    print(f"Could not find valid route for {vehicle_id}")
+    
+    self.stats['total_vehicles'] += spawned
+    print(f"Successfully spawned {spawned}/{count} vehicles")
+    return spawned
