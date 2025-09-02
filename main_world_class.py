@@ -1,6 +1,6 @@
 """
 Manhattan Power Grid - World Class Main Application
-MINIMAL UPDATE: Only traffic light logic changed, everything else untouched
+FIXED: Traffic light colors, popup styling, refresh issues
 """
 
 from flask import Flask, render_template_string, jsonify, request
@@ -10,16 +10,9 @@ import threading
 import time
 from datetime import datetime
 
-# Import our systems - KEEP YOUR EXISTING IMPORTS
+# Import our systems
 from core.power_system import ManhattanPowerGrid
-
-# Check if using V2 or original
-try:
-    from integrated_backend import ManhattanIntegratedSystemV2
-    integrated_backend_class = ManhattanIntegratedSystemV2
-except:
-    from integrated_backend import ManhattanIntegratedSystem
-    integrated_backend_class = ManhattanIntegratedSystem
+from integrated_backend import ManhattanIntegratedSystem
 
 app = Flask(__name__)
 CORS(app)
@@ -36,9 +29,38 @@ power_grid = ManhattanPowerGrid()
 
 # Initialize integrated system
 print("Loading integrated distribution network...")
-integrated_system = integrated_backend_class(power_grid)
+integrated_system = ManhattanIntegratedSystem(power_grid)
 
-# YOUR EXACT HTML TEMPLATE - ONLY SMALL FIXES FOR TRAFFIC LIGHTS
+# System state
+system_running = True
+current_time = 0
+
+def simulation_loop():
+    """Background simulation loop for realistic traffic light phases"""
+    global current_time
+    
+    while system_running:
+        try:
+            # Update traffic light phases every 2 seconds
+            if current_time % 2 == 0:
+                integrated_system.update_traffic_light_phases()
+            
+            # Run power flow every 30 seconds (less frequent)
+            if current_time % 30 == 0:
+                power_grid.run_power_flow("dc")
+            
+            current_time += 1
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"Simulation error: {e}")
+            time.sleep(1)
+
+# Start simulation thread
+sim_thread = threading.Thread(target=simulation_loop, daemon=True)
+sim_thread.start()
+
+# HTML Template with fixes
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
@@ -547,28 +569,25 @@ HTML_TEMPLATE = '''
             ev: true,
             substations: true
         };
+        let lastUpdateTime = 0;
         
-        // Load network state - REDUCED FREQUENCY TO AVOID FLASHING
-        async function loadNetworkState() {
+        // Load network state (optimized to prevent flashing)
+        async function loadNetworkState(forceRedraw = false) {
             try {
                 const response = await fetch('/api/network_state');
                 networkState = await response.json();
                 updateUI();
-                // Only update traffic lights, not full redraw
-                updateTrafficLights();
                 
-            } catch (error) {
-                console.error('Error loading network state:', error);
-            }
-        }
-        
-        // Initial full render
-        async function initialRender() {
-            try {
-                const response = await fetch('/api/network_state');
-                networkState = await response.json();
-                updateUI();
-                renderNetwork();  // Full render only once
+                // Only redraw if forced or first time
+                const now = Date.now();
+                if (forceRedraw || now - lastUpdateTime > 5000) {
+                    renderNetwork();
+                    lastUpdateTime = now;
+                } else {
+                    // Just update traffic lights without full redraw
+                    updateTrafficLights();
+                }
+                
             } catch (error) {
                 console.error('Error loading network state:', error);
             }
@@ -587,8 +606,8 @@ HTML_TEMPLATE = '''
             document.getElementById('substations-online').textContent = 
                 `${stats.operational_substations}/${stats.total_substations}`;
             
-            // Update traffic light color counts - USE REAL DATA FROM BACKEND
-            document.getElementById('green-count').textContent = stats.green_ns + stats.green_ew || 0;
+            // Update traffic light color counts
+            document.getElementById('green-count').textContent = stats.green_lights || 0;
             document.getElementById('yellow-count').textContent = stats.yellow_lights || 0;
             document.getElementById('red-count').textContent = stats.red_lights || 0;
             document.getElementById('black-count').textContent = stats.black_lights || 0;
@@ -627,7 +646,7 @@ HTML_TEMPLATE = '''
             }
         }
         
-        // Update only traffic lights without full redraw
+        // Update only traffic lights (no full redraw)
         function updateTrafficLights() {
             if (!map.getSource('traffic-lights') || !networkState) return;
             
@@ -651,7 +670,7 @@ HTML_TEMPLATE = '''
             });
         }
         
-        // Render network on map - KEEP YOUR EXACT CABLE LOGIC
+        // Render network on map
         function renderNetwork() {
             if (!networkState) return;
             
@@ -684,7 +703,7 @@ HTML_TEMPLATE = '''
                             Status: <span style="color: ${sub.operational ? '#00ff88' : '#ff0000'}">
                                 ${sub.operational ? '⚡ ONLINE' : '⚠️ FAILED'}
                             </span><br>
-                            Coverage: ${sub.coverage_area || 'N/A'}
+                            Coverage: ${sub.coverage_area}
                         `))
                         .addTo(map);
                     
@@ -692,7 +711,7 @@ HTML_TEMPLATE = '''
                 });
             }
             
-            // KEEP YOUR EXACT CABLE RENDERING LOGIC
+            // Handle cables (only recreate if needed)
             if (!map.getLayer('primary-cables') && networkState.cables) {
                 // Primary cables
                 if (layers.primary && networkState.cables.primary) {
@@ -775,7 +794,7 @@ HTML_TEMPLATE = '''
                 }
             }
             
-            // Add traffic lights - WITH PROPER COLORS FROM BACKEND
+            // Add traffic lights with ACTUAL COLORS
             if (layers.lights && networkState.traffic_lights) {
                 const features = networkState.traffic_lights.map(tl => ({
                     type: 'Feature',
@@ -785,7 +804,7 @@ HTML_TEMPLATE = '''
                     },
                     properties: {
                         powered: tl.powered,
-                        color: tl.color || '#ff0000',
+                        color: tl.color || '#ff0000',  // Use actual color from backend
                         phase: tl.phase,
                         intersection: tl.intersection
                     }
@@ -818,7 +837,7 @@ HTML_TEMPLATE = '''
                             14, 3.5,
                             16, 5
                         ],
-                        'circle-color': ['get', 'color'],
+                        'circle-color': ['get', 'color'],  // Use the actual color property
                         'circle-opacity': [
                             'interpolate', ['linear'], ['zoom'],
                             12, 0.8,
@@ -885,7 +904,7 @@ HTML_TEMPLATE = '''
                         .setPopup(new mapboxgl.Popup({offset: 25}).setHTML(`
                             <strong>${ev.name}</strong><br>
                             Chargers: ${ev.chargers}<br>
-                            Substation: ${ev.substation || 'N/A'}<br>
+                            Substation: ${ev.substation}<br>
                             Status: <span style="color: ${ev.operational ? '#00ff88' : '#ff0000'}">
                                 ${ev.operational ? '✅ Online' : '❌ Offline'}
                             </span>
@@ -907,14 +926,14 @@ HTML_TEMPLATE = '''
                 await fetch(`/api/restore/${name}`, { method: 'POST' });
             }
             
-            // Reload after change
-            setTimeout(initialRender, 500);
+            // Force full redraw after failure/restore
+            await loadNetworkState(true);
         }
         
         // Restore all
         async function restoreAll() {
             await fetch('/api/restore_all', { method: 'POST' });
-            setTimeout(initialRender, 500);
+            await loadNetworkState(true);
         }
         
         // Toggle layer
@@ -942,13 +961,13 @@ HTML_TEMPLATE = '''
         
         // Initialize
         map.on('load', () => {
-            initialRender();  // Full render once
+            loadNetworkState(true);
             
-            // Update only traffic lights every 2 seconds (not full refresh)
-            setInterval(loadNetworkState, 2000);
+            // Update traffic lights every 2 seconds
+            setInterval(() => loadNetworkState(false), 2000);
             
-            // Full refresh only every 30 seconds
-            setInterval(initialRender, 30000);
+            // Full refresh every 30 seconds
+            setInterval(() => loadNetworkState(true), 30000);
             
             setInterval(updateTime, 1000);
             updateTime();
@@ -1000,20 +1019,12 @@ def get_status():
 if __name__ == '__main__':
     print("\n" + "=" * 60)
     print("System Information:")
-    
-    # Check which version is being used
-    if hasattr(integrated_system, 'traffic_controller'):
-        print("✅ Using REALISTIC traffic control system")
-        print(f"  - Traffic Lights: {len(integrated_system.traffic_controller.traffic_lights)}")
-        print(f"  - Zones: {len(integrated_system.traffic_controller.coordination_zones)}")
-    else:
-        print("Using standard integrated system")
-        print(f"  - Traffic Lights: {len(integrated_system.traffic_lights)}")
-    
     print(f"  - Substations: {len(integrated_system.substations)}")
     print(f"  - Distribution Transformers: {len(integrated_system.distribution_transformers)}")
-    print(f"  - Primary Cables: {len(integrated_system.primary_cables)}")
-    print(f"  - Secondary Cables: {len(integrated_system.secondary_cables)}")
+    print(f"  - Traffic Lights: {len(integrated_system.traffic_lights)}")
+    print(f"  - EV Stations: {len(integrated_system.ev_stations)}")
+    print(f"  - Primary Cables (13.8kV): {len(integrated_system.primary_cables)}")
+    print(f"  - Secondary Cables (480V): {len(integrated_system.secondary_cables)}")
     print("=" * 60)
     print("\n🚀 Starting server at http://localhost:5000")
     print("=" * 60)
