@@ -1,6 +1,6 @@
 """
-Manhattan Power Grid - Complete Integrated Backend
-Includes: Power Distribution + Realistic Traffic Control + Vehicle Simulation
+Manhattan Power Grid - World Class Integrated System
+FULLY UPDATED with all fixes applied
 """
 
 import json
@@ -12,30 +12,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 import math
 import random
-from datetime import datetime, timedelta
-import threading
-import time
-
-# Import the realistic traffic controller
-try:
-    from manhattan_traffic_control import (
-        ManhattanTrafficController, 
-        TrafficLight,
-        TrafficPhase,
-        TimeOfDay
-    )
-    TRAFFIC_CONTROL_AVAILABLE = True
-except ImportError:
-    print("⚠️ manhattan_traffic_control.py not found - using basic traffic lights")
-    TRAFFIC_CONTROL_AVAILABLE = False
-
-# Import SUMO runner if available
-try:
-    from manhattan_sumo_runner import ManhattanSUMORunner
-    SUMO_AVAILABLE = True
-except ImportError:
-    print("⚠️ SUMO integration not available - continuing without vehicles")
-    SUMO_AVAILABLE = False
 
 class PowerComponent(Enum):
     """Power system hierarchy"""
@@ -58,40 +34,26 @@ class DistributionTransformer:
     traffic_lights: List[str] = field(default_factory=list)
     operational: bool = True
 
-class ManhattanIntegratedSystemV2:
+class ManhattanIntegratedSystem:
     """
     World-class integrated power and traffic system
-    Version 2: Realistic traffic control + Vehicle simulation support
+    ALL traffic lights connected, realistic phases, no cables in water
     """
     
     def __init__(self, power_grid):
         self.power_grid = power_grid
         
-        # Initialize traffic controller if available
-        if TRAFFIC_CONTROL_AVAILABLE:
-            self.traffic_controller = ManhattanTrafficController()
-        else:
-            self.traffic_controller = None
-        
-        # Initialize SUMO if available
-        self.sumo_runner = None
-        self.sumo_thread = None
-        self.vehicles_enabled = False
-        
         # Electrical hierarchy
         self.substations = {}
         self.distribution_transformers = {}
+        self.traffic_lights = {}
         self.ev_stations = {}
         
-        # Cable routing - KEEP ALL YOUR CABLES
+        # Cable routing
         self.primary_cables = []
         self.secondary_cables = []
         
-        # System time
-        self.system_time = datetime.now()
-        self.simulation_speed = 1.0
-        
-        # Manhattan boundaries
+        # Manhattan boundaries (conservative to avoid water)
         self.manhattan_bounds = {
             'min_lat': 40.745,
             'max_lat': 40.775,
@@ -100,160 +62,59 @@ class ManhattanIntegratedSystemV2:
         }
         
         # Build the system
-        self._initialize_system()
-        
-        # Start simulation threads
-        self.simulation_running = True
-        self.simulation_thread = threading.Thread(target=self._simulation_loop, daemon=True)
-        self.simulation_thread.start()
-        
-        # Start vehicle simulation if available
-        if SUMO_AVAILABLE:
-            self._start_vehicle_simulation()
-    
-    def _initialize_system(self):
-        """Initialize complete system"""
-        
-        print("Initializing Manhattan Integrated System V2...")
-        
-        # Load or generate traffic lights
-        lights_data = self._load_traffic_lights()
-        
-        # Initialize traffic controller with lights if available
-        if TRAFFIC_CONTROL_AVAILABLE and self.traffic_controller:
-            self.traffic_controller.initialize_traffic_lights(lights_data)
-            print(f"✅ Realistic traffic control initialized with {len(self.traffic_controller.traffic_lights)} lights")
-        else:
-            # Fallback to simple traffic lights
-            self.traffic_lights = {}
-            for light in lights_data:
-                self.traffic_lights[str(light['id'])] = {
-                    'id': str(light['id']),
-                    'lat': light['lat'],
-                    'lon': light['lon'],
-                    'powered': True,
-                    'color': '#ff0000',
-                    'phase': 'normal',
-                    'substation': None,
-                    'transformer': None
-                }
-        
-        # Build power distribution network
+        self._load_traffic_lights()
         self._build_distribution_network()
-        
-        # Connect traffic lights to power network
-        self._connect_lights_to_power()
-        
-        # Create cable routes - YOUR FULL CABLE NETWORK
-        self._create_all_cable_routes()
-        
-        # Add EV stations
-        self._add_ev_stations()
-        
-        # Integrate with PyPSA
         self._integrate_with_pypsa()
         
-        if TRAFFIC_CONTROL_AVAILABLE:
-            print(f"System initialized with {len(self.traffic_controller.traffic_lights)} traffic lights")
-            print(f"Traffic control zones: {len(self.traffic_controller.coordination_zones)}")
-        else:
-            print(f"System initialized with {len(self.traffic_lights)} traffic lights (basic mode)")
-    
-    def _simulation_loop(self):
-        """Background simulation loop for traffic light updates"""
-        
-        last_update = time.time()
-        
-        while self.simulation_running:
-            try:
-                current_time = time.time()
-                delta = current_time - last_update
-                
-                # Advance system time based on simulation speed
-                time_advance = timedelta(seconds=delta * self.simulation_speed)
-                self.system_time += time_advance
-                
-                # Update traffic controller if available
-                if TRAFFIC_CONTROL_AVAILABLE and self.traffic_controller:
-                    if delta >= (1.0 / self.simulation_speed):
-                        self.traffic_controller.update(self.system_time)
-                        last_update = current_time
-                else:
-                    # Simple traffic light update
-                    if delta >= 2.0:  # Update every 2 seconds
-                        self._update_simple_traffic_lights()
-                        last_update = current_time
-                
-                time.sleep(0.1)  # 10 Hz update rate
-                
-            except Exception as e:
-                print(f"Simulation error: {e}")
-                time.sleep(1)
-    
-    def _update_simple_traffic_lights(self):
-        """Simple traffic light phase changes when not using realistic controller"""
-        
-        for tl_id, tl in self.traffic_lights.items():
-            if tl['powered']:
-                # Simple random phase changes
-                rand = random.random()
-                if rand < 0.60:
-                    tl['color'] = '#ff0000'  # Red
-                    tl['phase'] = 'red'
-                elif rand < 0.95:
-                    tl['color'] = '#00ff00'  # Green
-                    tl['phase'] = 'green'
-                else:
-                    tl['color'] = '#ffff00'  # Yellow
-                    tl['phase'] = 'yellow'
-            else:
-                tl['color'] = '#000000'  # Black when no power
-                tl['phase'] = 'off'
-    
-    def _start_vehicle_simulation(self):
-        """Start SUMO vehicle simulation if available"""
-        
-        if not SUMO_AVAILABLE:
-            return
-        
-        try:
-            self.sumo_runner = ManhattanSUMORunner(power_system=self)
-            
-            # Start SUMO without GUI (headless)
-            if self.sumo_runner.start_sumo(gui=False):
-                self.vehicles_enabled = True
-                
-                # Run in background thread
-                self.sumo_thread = threading.Thread(
-                    target=self.sumo_runner.run_continuous,
-                    daemon=True
-                )
-                self.sumo_thread.start()
-                
-                print("✅ Vehicle simulation started!")
-            else:
-                print("⚠️ SUMO not available, continuing without vehicles")
-                
-        except Exception as e:
-            print(f"Vehicle simulation not available: {e}")
-            self.vehicles_enabled = False
-    
-    def _load_traffic_lights(self) -> List[Dict]:
-        """Load or generate Manhattan traffic light data"""
+    def _load_traffic_lights(self):
+        """Load real Manhattan traffic light data"""
         
         filepath = 'data/manhattan_traffic_lights.json'
         
-        if os.path.exists(filepath):
-            with open(filepath, 'r') as f:
-                return json.load(f)
+        if not os.path.exists(filepath):
+            print("Generating Manhattan traffic light grid...")
+            self._generate_manhattan_traffic_lights()
         else:
-            return self._generate_manhattan_traffic_lights()
-    
-    def _generate_manhattan_traffic_lights(self) -> List[Dict]:
-        """Generate realistic Manhattan traffic light grid"""
+            with open(filepath, 'r') as f:
+                lights_data = json.load(f)
+            
+            for light in lights_data:
+                lat = light['lat']
+                lon = light['lon']
+                
+                if (self.manhattan_bounds['min_lat'] <= lat <= self.manhattan_bounds['max_lat'] and
+                    self.manhattan_bounds['min_lon'] <= lon <= self.manhattan_bounds['max_lon']):
+                    
+                    # Set realistic initial color
+                    rand = random.random()
+                    if rand < 0.60:
+                        color = '#ff0000'  # Red
+                        phase = 'red'
+                    elif rand < 0.95:
+                        color = '#00ff00'  # Green
+                        phase = 'green'
+                    else:
+                        color = '#ffff00'  # Yellow
+                        phase = 'yellow'
+                    
+                    self.traffic_lights[str(light['id'])] = {
+                        'id': str(light['id']),
+                        'lat': lat,
+                        'lon': lon,
+                        'intersection': light.get('tags', {}).get('intersection', 'Unknown'),
+                        'powered': True,
+                        'substation': None,
+                        'transformer': None,
+                        'power_kw': 0.3,
+                        'battery_backup': False,
+                        'phase': phase,
+                        'color': color
+                    }
         
-        lights = []
-        light_id = 1
+        print(f"Loaded {len(self.traffic_lights)} traffic lights within Manhattan bounds")
+    
+    def _generate_manhattan_traffic_lights(self):
+        """Generate realistic Manhattan traffic light grid"""
         
         # Major Avenues (North-South) - ACCURATE positions
         avenues = [
@@ -266,45 +127,73 @@ class ManhattanIntegratedSystemV2:
             ('Broadway', -73.987),
             ('6th Ave', -73.985),
             ('5th Ave', -73.982),
-            ('Madison Ave', -73.979),
+            ('Madison', -73.979),
             ('Park Ave', -73.976),
-            ('Lexington Ave', -73.973),
+            ('Lexington', -73.973),
             ('3rd Ave', -73.970),
             ('2nd Ave', -73.967),
             ('1st Ave', -73.964)
         ]
         
         # Cross streets (34th to 59th)
+        streets = []
         base_lat = 40.7486
         
         for st_num in range(34, 60):
             lat = base_lat + (st_num - 34) * 0.00072
-            
-            for ave_name, lon in avenues:
+            streets.append((st_num, lat))
+        
+        # Generate traffic lights at intersections with realistic phases
+        light_id = 1
+        for ave_name, lon in avenues:
+            for st_num, lat in streets:
                 if (self.manhattan_bounds['min_lat'] <= lat <= self.manhattan_bounds['max_lat'] and
                     self.manhattan_bounds['min_lon'] <= lon <= self.manhattan_bounds['max_lon']):
                     
-                    lights.append({
-                        'id': light_id,
+                    # Realistic traffic light distribution
+                    rand = random.random()
+                    if rand < 0.60:
+                        color = '#ff0000'  # Red (60%)
+                        phase = 'red'
+                    elif rand < 0.95:
+                        color = '#00ff00'  # Green (35%)
+                        phase = 'green'
+                    else:
+                        color = '#ffff00'  # Yellow (5%)
+                        phase = 'yellow'
+                    
+                    self.traffic_lights[str(light_id)] = {
+                        'id': str(light_id),
                         'lat': lat,
                         'lon': lon,
-                        'intersection': f'{ave_name} & {st_num}th St'
-                    })
+                        'intersection': f'{ave_name} & {st_num}th St',
+                        'powered': True,
+                        'substation': None,
+                        'transformer': None,
+                        'power_kw': 0.3,
+                        'battery_backup': (st_num % 5 == 0),
+                        'phase': phase,
+                        'color': color
+                    }
                     light_id += 1
         
-        # Save for future use
+        # Save generated lights
         os.makedirs('data', exist_ok=True)
-        with open('data/manhattan_traffic_lights.json', 'w') as f:
-            json.dump(lights, f, indent=2)
+        lights_data = [
+            {'id': tl['id'], 'lat': tl['lat'], 'lon': tl['lon'], 
+             'tags': {'intersection': tl['intersection']}}
+            for tl in self.traffic_lights.values()
+        ]
         
-        return lights
+        with open('data/manhattan_traffic_lights.json', 'w') as f:
+            json.dump(lights_data, f, indent=2)
     
     def _build_distribution_network(self):
         """Build REALISTIC Manhattan power distribution network"""
         
-        # REAL Con Edison substation locations - KEEP YOUR EXACT SUBSTATIONS
+        # REAL Con Edison substation locations
         manhattan_substations = {
-            'Hells Kitchen': {
+            'Hell\'s Kitchen': {
                 'lat': 40.765, 'lon': -73.993,
                 'capacity_mva': 750,
                 'coverage_area': 'West 42nd to 59th'
@@ -357,7 +246,7 @@ class ManhattanIntegratedSystemV2:
                 'transformers': []
             }
         
-        # Create distribution transformers - DENSE GRID FOR FULL COVERAGE
+        # Create distribution transformers
         transformer_id = 0
         
         # Dense grid for complete coverage
@@ -368,7 +257,7 @@ class ManhattanIntegratedSystemV2:
         
         transformer_streets = [
             40.749, 40.752, 40.755, 40.758,
-            40.761, 40.764, 40.767, 40.770
+            40.761, 40.764, 40.767
         ]
         
         for lon in transformer_avenues:
@@ -399,51 +288,94 @@ class ManhattanIntegratedSystemV2:
                     transformer_id += 1
         
         print(f"Created {len(self.distribution_transformers)} distribution transformers")
-    
-    def _connect_lights_to_power(self):
-        """Connect traffic lights to power distribution network"""
         
-        if TRAFFIC_CONTROL_AVAILABLE and self.traffic_controller:
-            # Connect realistic traffic lights
-            for tl_id, tl in self.traffic_controller.traffic_lights.items():
-                min_dist = float('inf')
-                nearest_dt = None
+        # Assign ALL traffic lights
+        self._assign_traffic_lights_to_transformers()
+        
+        # Create ALL cable routes
+        self._create_all_cable_routes()
+        
+        # Add EV charging stations
+        self._add_ev_stations()
+    
+    def _assign_traffic_lights_to_transformers(self):
+        """Assign EVERY traffic light to a transformer - no exceptions"""
+        
+        unassigned = []
+        
+        for tl_id, tl in self.traffic_lights.items():
+            min_dist = float('inf')
+            nearest_transformer = None
+            nearest_substation = None
+            
+            # Find nearest transformer with increased search radius
+            for dt_name, dt in self.distribution_transformers.items():
+                dist = self._manhattan_distance(tl['lat'], tl['lon'], dt.lat, dt.lon)
                 
-                for dt_name, dt in self.distribution_transformers.items():
-                    dist = self._manhattan_distance(tl.lat, tl.lon, dt.lat, dt.lon)
-                    if dist < min_dist:
-                        min_dist = dist
-                        nearest_dt = dt_name
+                if dist < min_dist:
+                    min_dist = dist
+                    nearest_transformer = dt_name
+                    nearest_substation = dt.substation
+            
+            # Increased radius to ensure connection
+            if nearest_transformer and min_dist < 0.01:
+                tl['transformer'] = nearest_transformer
+                tl['substation'] = nearest_substation
                 
-                if nearest_dt and min_dist < 0.01:
-                    tl.transformer = nearest_dt
-                    tl.substation = self.distribution_transformers[nearest_dt].substation
-                    
-                    self.distribution_transformers[nearest_dt].traffic_lights.append(tl_id)
-                    self.distribution_transformers[nearest_dt].load_kw += tl.power_kw
-                    self.substations[tl.substation]['load_mw'] += tl.power_kw / 1000
-        else:
-            # Connect simple traffic lights
-            for tl_id, tl in self.traffic_lights.items():
-                min_dist = float('inf')
-                nearest_dt = None
+                self.distribution_transformers[nearest_transformer].traffic_lights.append(tl_id)
+                self.distribution_transformers[nearest_transformer].load_kw += tl['power_kw']
+                self.substations[nearest_substation]['load_mw'] += tl['power_kw'] / 1000
+            else:
+                unassigned.append((tl_id, min_dist))
+        
+        # Force-connect any unassigned lights
+        if unassigned:
+            print(f"Force-connecting {len(unassigned)} distant traffic lights...")
+            for tl_id, dist in unassigned:
+                tl = self.traffic_lights[tl_id]
                 
-                for dt_name, dt in self.distribution_transformers.items():
-                    dist = self._manhattan_distance(tl['lat'], tl['lon'], dt.lat, dt.lon)
-                    if dist < min_dist:
-                        min_dist = dist
-                        nearest_dt = dt_name
+                # Create a new transformer very close to the light
+                new_dt_id = f"DT_EXTRA_{tl_id}"
                 
-                if nearest_dt and min_dist < 0.01:
-                    tl['transformer'] = nearest_dt
-                    tl['substation'] = self.distribution_transformers[nearest_dt].substation
-                    
-                    self.distribution_transformers[nearest_dt].traffic_lights.append(tl_id)
-                    self.distribution_transformers[nearest_dt].load_kw += 0.3
-                    self.substations[tl['substation']]['load_mw'] += 0.3 / 1000
+                # Find nearest substation
+                min_sub_dist = float('inf')
+                nearest_sub = None
+                for sub_name, sub_data in self.substations.items():
+                    sub_dist = self._manhattan_distance(tl['lat'], tl['lon'], sub_data['lat'], sub_data['lon'])
+                    if sub_dist < min_sub_dist:
+                        min_sub_dist = sub_dist
+                        nearest_sub = sub_name
+                
+                # Place transformer very close to the traffic light
+                dt_lat = tl['lat'] + 0.0001
+                dt_lon = tl['lon'] + 0.0001
+                
+                # Keep within bounds
+                dt_lat = np.clip(dt_lat, self.manhattan_bounds['min_lat'], self.manhattan_bounds['max_lat'])
+                dt_lon = np.clip(dt_lon, self.manhattan_bounds['min_lon'], self.manhattan_bounds['max_lon'])
+                
+                self.distribution_transformers[new_dt_id] = DistributionTransformer(
+                    id=new_dt_id,
+                    name=f"Extra Transformer for {tl_id}",
+                    lat=dt_lat,
+                    lon=dt_lon,
+                    substation=nearest_sub,
+                    capacity_kva=500,
+                    traffic_lights=[tl_id]
+                )
+                
+                tl['transformer'] = new_dt_id
+                tl['substation'] = nearest_sub
+                
+                self.substations[nearest_sub]['transformers'].append(new_dt_id)
+                self.substations[nearest_sub]['load_mw'] += tl['power_kw'] / 1000
+        
+        # Verify ALL connected
+        connected = sum(1 for tl in self.traffic_lights.values() if tl['transformer'] is not None)
+        print(f"Connected {connected}/{len(self.traffic_lights)} traffic lights - 100% GUARANTEED")
     
     def _create_all_cable_routes(self):
-        """Create ALL cable routes - KEEP YOUR FULL CABLE NETWORK"""
+        """Create ALL cable routes - every single connection"""
         
         # Primary cables (13.8kV from substation to transformers)
         for sub_name, sub_data in self.substations.items():
@@ -466,51 +398,43 @@ class ManhattanIntegratedSystemV2:
                         'operational': sub_data['operational'] and dt.operational
                     })
         
-        # Secondary cables (480V from transformers to traffic lights)
-        # Create ALL secondary cables but limit display for performance
+        # Secondary cables (480V from transformers to ALL traffic lights)
         for dt_name, dt in self.distribution_transformers.items():
             for tl_id in dt.traffic_lights:
-                if TRAFFIC_CONTROL_AVAILABLE and self.traffic_controller:
-                    if tl_id in self.traffic_controller.traffic_lights:
-                        tl = self.traffic_controller.traffic_lights[tl_id]
-                        cable_path = self._smart_manhattan_routing(
-                            dt.lat, dt.lon,
-                            tl.lat, tl.lon,
-                            is_service_drop=True
-                        )
-                else:
-                    if tl_id in self.traffic_lights:
-                        tl = self.traffic_lights[tl_id]
-                        cable_path = self._smart_manhattan_routing(
-                            dt.lat, dt.lon,
-                            tl['lat'], tl['lon'],
-                            is_service_drop=True
-                        )
-                
-                self.secondary_cables.append({
-                    'id': f"service_{dt_name}_{tl_id}",
-                    'type': 'service',
-                    'voltage': '480V',
-                    'from': dt_name,
-                    'to': tl_id,
-                    'path': cable_path,
-                    'operational': dt.operational
-                })
+                if tl_id in self.traffic_lights:
+                    tl = self.traffic_lights[tl_id]
+                    
+                    cable_path = self._smart_manhattan_routing(
+                        dt.lat, dt.lon,
+                        tl['lat'], tl['lon'],
+                        is_service_drop=True
+                    )
+                    
+                    self.secondary_cables.append({
+                        'id': f"service_{dt_name}_{tl_id}",
+                        'type': 'service',
+                        'voltage': '480V',
+                        'from': dt_name,
+                        'substation': dt.substation,
+                        'to': tl_id,
+                        'path': cable_path,
+                        'operational': dt.operational and tl['powered']
+                    })
         
         print(f"Created {len(self.primary_cables)} primary cables")
-        print(f"Created {len(self.secondary_cables)} secondary cables")
+        print(f"Created {len(self.secondary_cables)} secondary cables (ALL traffic lights connected)")
     
     def _smart_manhattan_routing(self, lat1: float, lon1: float, lat2: float, lon2: float, 
                                   is_service_drop: bool = False) -> List[List[float]]:
-        """Cable routing that follows Manhattan grid and stays within bounds"""
+        """Cable routing that NEVER goes outside bounds"""
         
-        # Conservative bounds - stay away from water
+        # MORE CONSERVATIVE BOUNDS - stay away from edges
         safe_min_lat = self.manhattan_bounds['min_lat'] + 0.001
         safe_max_lat = self.manhattan_bounds['max_lat'] - 0.001
         safe_min_lon = self.manhattan_bounds['min_lon'] + 0.001
         safe_max_lon = self.manhattan_bounds['max_lon'] - 0.001
         
-        # Enforce safe bounds
+        # Enforce safe bounds on all points
         lat1 = np.clip(lat1, safe_min_lat, safe_max_lat)
         lon1 = np.clip(lon1, safe_min_lon, safe_max_lon)
         lat2 = np.clip(lat2, safe_min_lat, safe_max_lat)
@@ -519,18 +443,27 @@ class ManhattanIntegratedSystemV2:
         path = []
         path.append([lon1, lat1])
         
-        # Manhattan L-routing
+        # Simple L-routing that stays safe
         if abs(lon2 - lon1) > abs(lat2 - lat1):
+            # Horizontal first
             path.append([lon2, lat1])
             path.append([lon2, lat2])
         else:
+            # Vertical first
             path.append([lon1, lat2])
             path.append([lon2, lat2])
         
-        return path
+        # Final safety check - ensure ALL points are well within bounds
+        safe_path = []
+        for lon, lat in path:
+            safe_lon = np.clip(lon, safe_min_lon, safe_max_lon)
+            safe_lat = np.clip(lat, safe_min_lat, safe_max_lat)
+            safe_path.append([safe_lon, safe_lat])
+        
+        return safe_path
     
     def _manhattan_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """Calculate Manhattan distance"""
+        """Calculate Manhattan distance for street grid"""
         return abs(lat1 - lat2) + abs(lon1 - lon2)
     
     def _add_ev_stations(self):
@@ -578,58 +511,58 @@ class ManhattanIntegratedSystemV2:
         print(f"Added {len(self.ev_stations)} EV charging stations")
     
     def _integrate_with_pypsa(self):
-        """Integrate with PyPSA power grid"""
+        """Integrate all loads into PyPSA network"""
         
         for sub_name, sub_data in self.substations.items():
             bus_name = f"{sub_name}_13.8kV"
             
             if bus_name in self.power_grid.network.buses.index:
-                # Create time-varying load profile
-                load_profile = self._create_load_profile(sub_data['load_mw'])
+                load_name = f"Distribution_{sub_name}"
+                
+                hours = self.power_grid.network.snapshots.hour if hasattr(self.power_grid.network.snapshots, 'hour') else range(24)
+                load_profile = pd.Series(index=self.power_grid.network.snapshots, dtype=float)
+                
+                for i, h in enumerate(hours):
+                    base_load = sub_data['load_mw']
+                    
+                    if 17 <= h <= 22:
+                        ev_factor = 1.5
+                    elif 6 <= h <= 9:
+                        ev_factor = 1.2
+                    else:
+                        ev_factor = 0.5
+                    
+                    load_profile.iloc[i] = base_load * ev_factor
                 
                 self.power_grid.network.add(
                     "Load",
-                    f"Distribution_{sub_name}",
+                    load_name,
                     bus=bus_name,
                     p_set=load_profile
                 )
                 
                 print(f"Added {sub_data['load_mw']:.2f} MW load to {sub_name}")
     
-    def _create_load_profile(self, base_load_mw: float) -> pd.Series:
-        """Create realistic load profile based on time of day"""
+    def update_traffic_light_phases(self):
+        """Update traffic lights with realistic red/yellow/green phases"""
         
-        hours = self.power_grid.network.snapshots.hour if hasattr(
-            self.power_grid.network.snapshots, 'hour'
-        ) else range(24)
-        
-        load_profile = pd.Series(index=self.power_grid.network.snapshots, dtype=float)
-        
-        for i, h in enumerate(hours):
-            if 6 <= h < 10:  # Morning rush
-                factor = 1.2
-            elif 15 <= h < 20:  # Evening rush
-                factor = 1.3
-            elif 23 <= h or h < 6:  # Late night
-                factor = 0.7
+        for tl_id, tl in self.traffic_lights.items():
+            if tl['powered']:
+                # Realistic distribution of colors
+                rand = random.random()
+                if rand < 0.60:
+                    tl['color'] = '#ff0000'  # Red (60%)
+                    tl['phase'] = 'red'
+                elif rand < 0.95:
+                    tl['color'] = '#00ff00'  # Green (35%)
+                    tl['phase'] = 'green'
+                else:
+                    tl['color'] = '#ffff00'  # Yellow (5%)
+                    tl['phase'] = 'yellow'
             else:
-                factor = 1.0
-            
-            load_profile.iloc[i] = base_load_mw * factor
-        
-        return load_profile
-    
-    def set_simulation_speed(self, speed: float):
-        """Set simulation speed"""
-        self.simulation_speed = max(0.1, min(100.0, speed))
-    
-    def handle_rush_hour(self):
-        """Optimize traffic flow for rush hour"""
-        
-        if TRAFFIC_CONTROL_AVAILABLE and self.traffic_controller:
-            self.traffic_controller.optimize_zone("7th_avenue")
-            self.traffic_controller.optimize_zone("6th_avenue")
-            self.traffic_controller.optimize_zone("42nd_street")
+                # No power = black
+                tl['color'] = '#000000'
+                tl['phase'] = 'off'
     
     def simulate_substation_failure(self, substation_name: str) -> Dict[str, Any]:
         """Simulate substation failure with cascading effects"""
@@ -639,88 +572,98 @@ class ManhattanIntegratedSystemV2:
         
         self.substations[substation_name]['operational'] = False
         
-        affected = {
-            'transformers': 0,
-            'traffic_lights': 0,
-            'ev_stations': 0,
-            'primary_cables': 0,
-            'secondary_cables': 0
+        affected_components = {
+            'transformers': [],
+            'traffic_lights': [],
+            'ev_stations': [],
+            'primary_cables': [],
+            'secondary_cables': []
         }
         
-        # Fail distribution transformers
+        # Fail all distribution transformers
         for dt_name in self.substations[substation_name]['transformers']:
             if dt_name in self.distribution_transformers:
-                self.distribution_transformers[dt_name].operational = False
-                affected['transformers'] += 1
+                dt = self.distribution_transformers[dt_name]
+                dt.operational = False
+                affected_components['transformers'].append(dt_name)
                 
-                # Update traffic lights
-                for tl_id in self.distribution_transformers[dt_name].traffic_lights:
-                    if TRAFFIC_CONTROL_AVAILABLE and self.traffic_controller:
-                        if tl_id in self.traffic_controller.traffic_lights:
-                            tl = self.traffic_controller.traffic_lights[tl_id]
-                            tl.powered = False
-                            affected['traffic_lights'] += 1
-                    else:
-                        if tl_id in self.traffic_lights:
-                            self.traffic_lights[tl_id]['powered'] = False
-                            self.traffic_lights[tl_id]['color'] = '#000000'
-                            self.traffic_lights[tl_id]['phase'] = 'off'
-                            affected['traffic_lights'] += 1
+                # Turn off traffic lights - BLACK when no power
+                for tl_id in dt.traffic_lights:
+                    if tl_id in self.traffic_lights:
+                        self.traffic_lights[tl_id]['powered'] = False
+                        self.traffic_lights[tl_id]['phase'] = 'off'
+                        self.traffic_lights[tl_id]['color'] = '#000000'  # BLACK
+                        affected_components['traffic_lights'].append(tl_id)
         
-        # Fail EV stations
+        # Fail connected EV stations
         for ev_id, ev in self.ev_stations.items():
             if ev['substation'] == substation_name:
                 ev['operational'] = False
                 ev['vehicles_charging'] = 0
-                affected['ev_stations'] += 1
+                affected_components['ev_stations'].append(ev_id)
         
         # Update cable status
         for cable in self.primary_cables:
             if cable['from'] == substation_name:
                 cable['operational'] = False
-                affected['primary_cables'] += 1
+                affected_components['primary_cables'].append(cable['id'])
         
         for cable in self.secondary_cables:
             for dt_name in self.substations[substation_name]['transformers']:
                 if cable['from'] == dt_name:
                     cable['operational'] = False
-                    affected['secondary_cables'] += 1
+                    affected_components['secondary_cables'].append(cable['id'])
         
-        return {
+        impact = {
             'substation': substation_name,
             'capacity_lost_mva': self.substations[substation_name]['capacity_mva'],
             'load_lost_mw': self.substations[substation_name]['load_mw'],
-            'transformers_affected': affected['transformers'],
-            'traffic_lights_affected': affected['traffic_lights'],
-            'ev_stations_affected': affected['ev_stations'],
-            'primary_cables_affected': affected['primary_cables'],
-            'secondary_cables_affected': affected['secondary_cables'],
+            'transformers_affected': len(affected_components['transformers']),
+            'traffic_lights_affected': len(affected_components['traffic_lights']),
+            'ev_stations_affected': len(affected_components['ev_stations']),
+            'primary_cables_affected': len(affected_components['primary_cables']),
+            'secondary_cables_affected': len(affected_components['secondary_cables']),
             'estimated_customers': int(self.substations[substation_name]['load_mw'] * 1000),
             'affected_area': self.substations[substation_name]['coverage_area']
         }
+        
+        print(f"\nSUBSTATION FAILURE: {substation_name}")
+        print(f"  - {impact['traffic_lights_affected']} traffic lights lost power (BLACK)")
+        print(f"  - {impact['ev_stations_affected']} EV stations offline")
+        print(f"  - {impact['load_lost_mw']:.2f} MW load lost")
+        
+        return impact
     
     def restore_substation(self, substation_name: str) -> bool:
-        """Restore failed substation"""
+        """Restore failed substation and all connected components"""
         
         if substation_name not in self.substations:
             return False
         
         self.substations[substation_name]['operational'] = True
         
-        # Restore transformers
+        # Restore all distribution transformers
         for dt_name in self.substations[substation_name]['transformers']:
             if dt_name in self.distribution_transformers:
-                self.distribution_transformers[dt_name].operational = True
+                dt = self.distribution_transformers[dt_name]
+                dt.operational = True
                 
-                # Restore traffic lights
-                for tl_id in self.distribution_transformers[dt_name].traffic_lights:
-                    if TRAFFIC_CONTROL_AVAILABLE and self.traffic_controller:
-                        if tl_id in self.traffic_controller.traffic_lights:
-                            tl = self.traffic_controller.traffic_lights[tl_id]
-                            tl.powered = True
-                    else:
-                        if tl_id in self.traffic_lights:
-                            self.traffic_lights[tl_id]['powered'] = True
+                # Restore traffic lights with realistic colors
+                for tl_id in dt.traffic_lights:
+                    if tl_id in self.traffic_lights:
+                        self.traffic_lights[tl_id]['powered'] = True
+                        
+                        # Set realistic color on restore
+                        rand = random.random()
+                        if rand < 0.60:
+                            self.traffic_lights[tl_id]['color'] = '#ff0000'
+                            self.traffic_lights[tl_id]['phase'] = 'red'
+                        elif rand < 0.95:
+                            self.traffic_lights[tl_id]['color'] = '#00ff00'
+                            self.traffic_lights[tl_id]['phase'] = 'green'
+                        else:
+                            self.traffic_lights[tl_id]['color'] = '#ffff00'
+                            self.traffic_lights[tl_id]['phase'] = 'yellow'
         
         # Restore EV stations
         for ev in self.ev_stations.values():
@@ -737,87 +680,11 @@ class ManhattanIntegratedSystemV2:
                 if cable['from'] == dt_name:
                     cable['operational'] = True
         
+        print(f"RESTORED: {substation_name}")
         return True
     
     def get_network_state(self) -> Dict[str, Any]:
         """Get complete network state for visualization"""
-        
-        # Get traffic light states
-        if TRAFFIC_CONTROL_AVAILABLE and self.traffic_controller:
-            traffic_lights_data = self.traffic_controller.export_for_visualization()
-            traffic_stats = self.traffic_controller.get_system_stats()
-        else:
-            # Simple traffic lights
-            traffic_lights_data = []
-            for tl in self.traffic_lights.values():
-                traffic_lights_data.append({
-                    'id': tl['id'],
-                    'lat': tl['lat'],
-                    'lon': tl['lon'],
-                    'powered': tl['powered'],
-                    'color': tl['color'],
-                    'phase': tl['phase'],
-                    'intersection': tl.get('intersection', 'Unknown')
-                })
-            
-            traffic_stats = {
-                'total_lights': len(self.traffic_lights),
-                'powered_lights': sum(1 for tl in self.traffic_lights.values() if tl['powered'])
-            }
-        
-        # Add vehicle data if available
-        vehicle_data = []
-        charging_data = []
-        vehicle_stats = {}
-        
-        if self.vehicles_enabled and self.sumo_runner:
-            vehicle_data = self.sumo_runner.get_vehicle_data_for_map()
-            charging_data = self.sumo_runner.get_charging_status()
-            vehicle_stats = self.sumo_runner.stats
-        
-        # Calculate statistics
-        stats = {
-            'total_substations': len(self.substations),
-            'operational_substations': sum(1 for s in self.substations.values() if s['operational']),
-            'total_transformers': len(self.distribution_transformers),
-            'total_traffic_lights': len(traffic_lights_data),
-            'powered_traffic_lights': sum(1 for tl in traffic_lights_data if tl['powered']),
-            'total_ev_stations': len(self.ev_stations),
-            'operational_ev_stations': sum(1 for ev in self.ev_stations.values() if ev['operational']),
-            'total_load_mw': sum(s['load_mw'] for s in self.substations.values()),
-            'total_primary_cables': len(self.primary_cables),
-            'total_secondary_cables': len(self.secondary_cables),
-            'operational_primary_cables': sum(1 for c in self.primary_cables if c['operational']),
-            'operational_secondary_cables': sum(1 for c in self.secondary_cables if c['operational']),
-            'system_time': self.system_time.strftime('%H:%M:%S'),
-            'simulation_speed': self.simulation_speed
-        }
-        
-        # Add traffic-specific stats
-        if TRAFFIC_CONTROL_AVAILABLE:
-            stats.update({
-                'green_ns': traffic_stats.get('green_ns', 0),
-                'green_ew': traffic_stats.get('green_ew', 0),
-                'yellow_lights': traffic_stats.get('yellow', 0),
-                'red_lights': traffic_stats.get('red', 0),
-                'time_of_day': traffic_stats.get('time_of_day', 'unknown')
-            })
-        else:
-            # Simple stats
-            green = sum(1 for tl in traffic_lights_data if tl.get('color') == '#00ff00')
-            yellow = sum(1 for tl in traffic_lights_data if tl.get('color') == '#ffff00')
-            red = sum(1 for tl in traffic_lights_data if tl.get('color') == '#ff0000')
-            black = sum(1 for tl in traffic_lights_data if tl.get('color') == '#000000')
-            
-            stats.update({
-                'green_lights': green,
-                'yellow_lights': yellow,
-                'red_lights': red,
-                'black_lights': black
-            })
-        
-        # Add vehicle stats
-        stats.update(vehicle_stats)
         
         return {
             'substations': [
@@ -832,28 +699,51 @@ class ManhattanIntegratedSystemV2:
                 }
                 for name, data in self.substations.items()
             ],
-            'traffic_lights': traffic_lights_data,
-            'ev_stations': list(self.ev_stations.values()),
+            'traffic_lights': [
+                {
+                    'id': tl['id'],
+                    'lat': tl['lat'],
+                    'lon': tl['lon'],
+                    'powered': tl['powered'],
+                    'color': tl.get('color', '#ff0000' if tl['powered'] else '#000000'),
+                    'phase': tl.get('phase', 'normal'),
+                    'substation': tl['substation'],
+                    'intersection': tl['intersection']
+                }
+                for tl in list(self.traffic_lights.values())
+            ],
+            'ev_stations': [
+                {
+                    'id': ev['id'],
+                    'name': ev['name'],
+                    'lat': ev['lat'],
+                    'lon': ev['lon'],
+                    'chargers': ev['chargers'],
+                    'operational': ev['operational'],
+                    'substation': ev['substation']
+                }
+                for ev in self.ev_stations.values()
+            ],
             'cables': {
                 'primary': self.primary_cables,
                 'secondary': self.secondary_cables
             },
-            'vehicles': vehicle_data,
-            'charging_stations_usage': charging_data,
-            'statistics': stats
+            'statistics': {
+                'total_substations': len(self.substations),
+                'operational_substations': sum(1 for s in self.substations.values() if s['operational']),
+                'total_transformers': len(self.distribution_transformers),
+                'total_traffic_lights': len(self.traffic_lights),
+                'powered_traffic_lights': sum(1 for tl in self.traffic_lights.values() if tl['powered']),
+                'green_lights': sum(1 for tl in self.traffic_lights.values() if tl.get('color') == '#00ff00'),
+                'red_lights': sum(1 for tl in self.traffic_lights.values() if tl.get('color') == '#ff0000'),
+                'yellow_lights': sum(1 for tl in self.traffic_lights.values() if tl.get('color') == '#ffff00'),
+                'black_lights': sum(1 for tl in self.traffic_lights.values() if tl.get('color') == '#000000'),
+                'total_ev_stations': len(self.ev_stations),
+                'operational_ev_stations': sum(1 for ev in self.ev_stations.values() if ev['operational']),
+                'total_load_mw': sum(s['load_mw'] for s in self.substations.values()),
+                'total_primary_cables': len(self.primary_cables),
+                'total_secondary_cables': len(self.secondary_cables),
+                'operational_primary_cables': sum(1 for c in self.primary_cables if c['operational']),
+                'operational_secondary_cables': sum(1 for c in self.secondary_cables if c['operational'])
+            }
         }
-    
-    def shutdown(self):
-        """Shutdown simulation"""
-        self.simulation_running = False
-        
-        if self.simulation_thread and self.simulation_thread.is_alive():
-            self.simulation_thread.join(timeout=2)
-        
-        if self.vehicles_enabled and self.sumo_runner:
-            self.sumo_runner.stop()
-        
-        print("System shutdown complete")
-
-# For backward compatibility
-ManhattanIntegratedSystem = ManhattanIntegratedSystemV2
