@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manhattan Power Grid - Command Center</title>
+    
+    <!-- Core Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+    <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        :root {
+            --primary-color: #00ff88;
+            --secondary-color: #00aaff;
+            --danger-color: #ff0066;
+            --warning-color: #ffaa00;
+            --bg-dark: #0a0a0f;
+            --bg-panel: rgba(15, 15, 25, 0.95);
+            --text-primary: #ffffff;
+            --text-secondary: rgba(255, 255, 255, 0.7);
+            --border-color: rgba(100, 200, 255, 0.2);
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            overflow: hidden;
+            position: relative;
+        }
+        
+        /* 3D Background Canvas */
+        #three-background {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        
+        /* Main Container */
+        .main-container {
+            position: relative;
+            z-index: 2;
+            width: 100%;
+            height: 100vh;
+            display: grid;
+            grid-template-columns: 80px 1fr 400px;
+            gap: 0;
+        }
+        
+        /* Navigation Sidebar */
+        .nav-sidebar {
+            background: var(--bg-panel);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px 0;
+            gap: 30px;
+        }
+        
+        .nav-item {
+            width: 50px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+        }
+        
+        .nav-item:hover {
+            background: rgba(0, 255, 136, 0.1);
+            border-color: var(--primary-color);
+            transform: translateY(-2px);
+        }
+        
+        .nav-item.active {
+            background: linear-gradient(135deg, rgba(0, 255, 136, 0.2), rgba(0, 170, 255, 0.2));
+            border-color: var(--primary-color);
+        }
+        
+        .nav-item::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            left: 70px;
+            background: var(--bg-panel);
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            white-space: nowrap;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s;
+            border: 1px solid var(--border-color);
+        }
+        
+        .nav-item:hover::after {
+            opacity: 1;
+        }
+        
+        /* Main Content Area */
+        .main-content {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        #map {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+        }
+        
+        /* HUD Overlay */
+        .hud-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+        }
+        
+        .hud-top {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            right: 20px;
+            display: flex;
+            justify-content: space-between;
+            pointer-events: auto;
+        }
+        
+        .metric-card {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 20px;
+            backdrop-filter: blur(20px);
+            min-width: 200px;
+        }
+        
+        .metric-value {
+            font-size: 32px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 5px;
+        }
+        
+        .metric-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .metric-change {
+            font-size: 14px;
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .metric-change.positive {
+            color: var(--primary-color);
+        }
+        
+        .metric-change.negative {
+            color: var(--danger-color);
+        }
+        
+        /* Right Panel */
+        .right-panel {
+            background: var(--bg-panel);
+            border-left: 1px solid var(--border-color);
+            overflow-y: auto;
+            padding: 20px;
+        }
+        
+        .panel-header {
+            margin-bottom: 25px;
+        }
+        
+        .panel-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+        
+        .panel-subtitle {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        
+        /* Charts */
+        .chart-container {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .chart-title {
+            font-size: 14px;
+            margin-bottom: 10px;
+            color: var(--text-secondary);
+        }
+        
+        /* Alerts */
+        .alerts-container {
+            margin-top: 20px;
+        }
+        
+        .alert-item {
+            background: rgba(255, 255, 255, 0.03);
+            border-left: 3px solid var(--warning-color);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 10px;
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        .alert-item.critical {
+            border-left-color: var(--danger-color);
+            background: rgba(255, 0, 102, 0.05);
+        }
+        
+        .alert-time {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 5px;
+        }
+        
+        .alert-message {
+            font-size: 13px;
+        }
+        
+        /* Animations */
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+        
+        /* 3D View Toggle */
+        .view-toggle {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 5px;
+            display: flex;
+            gap: 5px;
+            pointer-events: auto;
+        }
+        
+        .view-btn {
+            padding: 10px 15px;
+            background: rgba(255, 255, 255, 0.05);
+            border: none;
+            border-radius: 8px;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .view-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        .view-btn.active {
+            background: var(--primary-color);
+            color: var(--bg-dark);
+        }
+        
+        /* AI Assistant */
+        .ai-assistant {
+            position: absolute;
+            bottom: 20px;
+            right: 420px;
+            width: 350px;
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 15px;
+            pointer-events: auto;
+            transform: translateY(calc(100% + 20px));
+            transition: transform 0.3s ease-out;
+        }
+        
+        .ai-assistant.active {
+            transform: translateY(0);
+        }
+        
+        .ai-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .ai-status {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--primary-color);
+            animation: pulse 2s infinite;
+        }
+        
+        .ai-messages {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+        }
+        
+        .ai-message {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+        
+        .ai-input {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px;
+            color: var(--text-primary);
+            font-size: 13px;
+        }
+        
+        /* Loading Screen */
+        .loading-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: var(--bg-dark);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            transition: opacity 0.5s;
+        }
+        
+        .loading-logo {
+            width: 100px;
+            height: 100px;
+            border: 3px solid var(--primary-color);
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 1s linear infinite;
+            margin-bottom: 30px;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .loading-text {
+            font-size: 18px;
+            color: var(--text-secondary);
+        }
+        
+        /* Holographic Effect */
+        .holographic {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .holographic::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(
+                45deg,
+                transparent,
+                rgba(0, 255, 136, 0.03),
+                transparent,
+                rgba(0, 170, 255, 0.03),
+                transparent
+            );
+            animation: holographicSweep 3s linear infinite;
+        }
+        
+        @keyframes holographicSweep {
+            0% { transform: translateX(-100%) translateY(-100%); }
+            100% { transform: translateX(100%) translateY(100%); }
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div class="loading-screen" id="loadingScreen">
+        <div class="loading-logo"></div>
+        <div class="loading-text">Initializing Manhattan Power Grid...</div>
+    </div>
+
+    <!-- 3D Background -->
+    <canvas id="three-background"></canvas>
+    
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Navigation Sidebar -->
+        <nav class="nav-sidebar">
+            <div class="nav-item active" data-tooltip="Dashboard" onclick="switchView('dashboard')">
+                <svg width="24" height="24" fill="currentColor">
+                    <rect x="3" y="3" width="7" height="7"/>
+                    <rect x="14" y="3" width="7" height="7"/>
+                    <rect x="3" y="14" width="7" height="7"/>
+                    <rect x="14" y="14" width="7" height="7"/>
+                </svg>
+            </div>
+            <div class="nav-item" data-tooltip="3D View" onclick="switchView('3d')">
+                <svg width="24" height="24" fill="currentColor">
+                    <path d="M12 2L2 7v10c0 5.5 3.8 10.7 9 12 5.2-1.3 9-6.5 9-12V7l-10-5z"/>
+                </svg>
+            </div>
+            <div class="nav-item" data-tooltip="Analytics" onclick="switchView('analytics')">
+                <svg width="24" height="24" fill="currentColor">
+                    <path d="M3 13h2v8H3zm4-8h2v16H7zm4-2h2v18h-2zm4 4h2v14h-2zm4-2h2v16h-2z"/>
+                </svg>
+            </div>
+            <div class="nav-item" data-tooltip="Predictions" onclick="switchView('ml')">
+                <svg width="24" height="24" fill="currentColor">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M12 1v6m0 6v6m11-7h-6m-6 0H1"/>
+                </svg>
+            </div>
+            <div class="nav-item" data-tooltip="Settings" onclick="switchView('settings')">
+                <svg width="24" height="24" fill="currentColor">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M12 1v6m0 6v6m11-7h-6m-6 0H1"/>
+                </svg>
+            </div>
+        </nav>
+        
+        <!-- Main Content -->
+        <div class="main-content">
+            <div id="map"></div>
+            
+            <!-- HUD Overlay -->
+            <div class="hud-overlay">
+                <div class="hud-top">
+                    <div class="metric-card holographic">
+                        <div class="metric-value" id="totalLoad">2,547</div>
+                        <div class="metric-label">MW Load</div>
+                        <div class="metric-change positive">
+                            <span>↑</span> 2.3% from hour ago
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card holographic">
+                        <div class="metric-value" id="systemHealth">98.5%</div>
+                        <div class="metric-label">System Health</div>
+                        <div class="metric-change positive">
+                            <span>→</span> Stable
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card holographic">
+                        <div class="metric-value" id="activeAlerts">3</div>
+                        <div class="metric-label">Active Alerts</div>
+                        <div class="metric-change negative">
+                            <span>!</span> 1 Critical
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- View Toggle -->
+                <div class="view-toggle">
+                    <button class="view-btn active" onclick="setMapStyle('2d')">2D Map</button>
+                    <button class="view-btn" onclick="setMapStyle('3d')">3D Map</button>
+                    <button class="view-btn" onclick="setMapStyle('satellite')">Satellite</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Right Panel -->
+        <div class="right-panel">
+            <div class="panel-header">
+                <div class="panel-title">System Analytics</div>
+                <div class="panel-subtitle">Real-time monitoring & predictions</div>
+            </div>
+            
+            <!-- Load Forecast Chart -->
+            <div class="chart-container">
+                <div class="chart-title">24-Hour Load Forecast</div>
+                <canvas id="loadChart" height="150"></canvas>
+            </div>
+            
+            <!-- Traffic Flow Chart -->
+            <div class="chart-container">
+                <div class="chart-title">Traffic Light Status</div>
+                <canvas id="trafficChart" height="100"></canvas>
+            </div>
+            
+            <!-- Anomaly Detection -->
+            <div class="chart-container">
+                <div class="chart-title">Anomaly Detection</div>
+                <div id="anomalyStatus" style="padding: 10px;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <div class="ai-status"></div>
+                        <span>ML Models Active - Monitoring 847 components</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Alerts -->
+            <div class="alerts-container">
+                <div class="panel-title" style="font-size: 16px; margin-bottom: 15px;">
+                    Recent Alerts
+                </div>
+                <div id="alertsList">
+                    <!-- Alerts will be added here -->
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- AI Assistant -->
+    <div class="ai-assistant" id="aiAssistant">
+        <div class="ai-header">
+            <div class="ai-status"></div>
+            <span>AI Assistant</span>
+            <button onclick="toggleAI()" style="margin-left: auto; background: none; border: none; color: var(--text-secondary); cursor: pointer;">×</button>
+        </div>
+        <div class="ai-messages" id="aiMessages">
+            <div class="ai-message">
+                Hello! I'm monitoring the grid. Ask me anything about the system status, predictions, or recommendations.
+            </div>
+        </div>
+        <input type="text" class="ai-input" placeholder="Ask a question..." onkeypress="handleAIInput(event)">
+    </div>
+
+    <script>
+        // ===================== INITIALIZATION =====================
+        
+        let scene, camera, renderer;
+        let map;
+        let ws = null;
+        let charts = {};
+        let systemData = {};
+        
+        // Initialize on load
+        window.addEventListener('load', async () => {
+            await initializeSystem();
+            hideLoadingScreen();
+        });
+        
+        async function initializeSystem() {
+            // Initialize 3D background
+            init3DBackground();
+            
+            // Initialize map
+            initializeMap();
+            
+            // Initialize charts
+            initializeCharts();
+            
+            // Connect WebSocket
+            connectWebSocket();
+            
+            // Start data updates
+            startDataUpdates();
+        }
+        
+        function hideLoadingScreen() {
+            const loadingScreen = document.getElementById('loadingScreen');
+            loadingScreen.style.opacity = '0';
+            setTimeout(() => {
+                loadingScreen.style.display = 'none';
+            }, 500);
+        }
+        
+        // ===================== 3D BACKGROUND =====================
+        
+        function init3DBackground() {
+            const canvas = document.getElementById('three-background');
+            
+            // Scene setup
+            scene = new THREE.Scene();
+            scene.fog = new THREE.Fog(0x0a0a0f, 100, 1000);
+            
+            // Camera
+            camera = new THREE.PerspectiveCamera(
+                75, 
+                window.innerWidth / window.innerHeight, 
+                0.1, 
+                1000
+            );
+            camera.position.z = 30;
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ 
+                canvas: canvas, 
+                antialias: true, 
+                alpha: true 
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            
+            // Create grid of particles
+            const geometry = new THREE.BufferGeometry();
+            const vertices = [];
+            const colors = [];
+            
+            for (let i = 0; i < 2000; i++) {
+                vertices.push(
+                    Math.random() * 100 - 50,
+                    Math.random() * 100 - 50,
+                    Math.random() * 100 - 50
+                );
+                
+                const color = new THREE.Color();
+                color.setHSL(0.3 + Math.random() * 0.3, 0.7, 0.5);
+                colors.push(color.r, color.g, color.b);
+            }
+            
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            
+            const material = new THREE.PointsMaterial({
+                size: 0.5,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.6
+            });
+            
+            const points = new THREE.Points(geometry, material);
+            scene.add(points);
+            
+            // Animation loop
+            function animate3D() {
+                requestAnimationFrame(animate3D);
+                
+                points.rotation.x += 0.0001;
+                points.rotation.y += 0.0002;
+                
+                renderer.render(scene, camera);
+            }
+            
+            animate3D();
+        }
+        
+        // ===================== MAP INITIALIZATION =====================
+        
+        function initializeMap() {
+            mapboxgl.accessToken = 'pk.eyJ1IjoibWFyb25veCIsImEiOiJjbWV1ODE5bHEwNGhoMmlvY2RleW51dWozIn0.FMrYdXLqnOwOEFi8qHSwxg';
+            
+            map = new mapboxgl.Map({
+                container: 'map',
+                style: 'mapbox://styles/mapbox/dark-v11',
+                center: [-73.980, 40.758],
+                zoom: 13,
+                pitch: 0
+            });
+            
+            map.on('load', () => {
+                // Add 3D buildings
+                map.addLayer({
+                    'id': '3d-buildings',
+                    'source': 'composite',
+                    'source-layer': 'building',
+                    'filter': ['==', 'extrude', 'true'],
+                    'type': 'fill-extrusion',
+                    'minzoom': 14,
+                    'paint': {
+                        'fill-extrusion-color': '#1a1a2e',
+                        'fill-extrusion-height': ['get', 'height'],
+                        'fill-extrusion-base': ['get', 'min_height'],
+                        'fill-extrusion-opacity': 0.8
+                    }
+                });
+                
+                // Load system data
+                loadSystemData();
+            });
+        }
+        
+        // ===================== CHARTS =====================
+        
+        function initializeCharts() {
+            // Load Forecast Chart
+            const loadCtx = document.getElementById('loadChart').getContext('2d');
+            charts.load = new Chart(loadCtx, {
+                type: 'line',
+                data: {
+                    labels: Array.from({length: 24}, (_, i) => `${i}:00`),
+                    datasets: [{
+                        label: 'Predicted Load',
+                        data: [],
+                        borderColor: '#00ff88',
+                        backgroundColor: 'rgba(0, 255, 136, 0.1)',
+                        tension: 0.4
+                    }, {
+                        label: 'Actual Load',
+                        data: [],
+                        borderColor: '#00aaff',
+                        backgroundColor: 'rgba(0, 170, 255, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: {
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            ticks: { color: 'rgba(255, 255, 255, 0.5)' }
+                        },
+                        x: {
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            ticks: { color: 'rgba(255, 255, 255, 0.5)' }
+                        }
+                    }
+                }
+            });
+            
+            // Traffic Chart
+            const trafficCtx = document.getElementById('trafficChart').getContext('2d');
+            charts.traffic = new Chart(trafficCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Green', 'Yellow', 'Red', 'Off'],
+                    datasets: [{
+                        data: [300, 50, 307, 0],
+                        backgroundColor: ['#00ff88', '#ffaa00', '#ff0066', '#333333']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: { color: 'rgba(255, 255, 255, 0.7)' }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // ===================== WEBSOCKET =====================
+        
+        function connectWebSocket() {
+            // In production, get token from auth
+            const token = 'your-jwt-token';
+            
+            ws = new WebSocket(`ws://localhost:8000/ws/v2/realtime?token=${token}`);
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                
+                // Subscribe to topics
+                ws.send(JSON.stringify({
+                    type: 'subscribe',
+                    topics: ['power', 'traffic', 'alerts', 'predictions']
+                }));
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleRealtimeUpdate(data);
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket disconnected. Reconnecting...');
+                setTimeout(connectWebSocket, 5000);
+            };
+        }
+        
+        function handleRealtimeUpdate(data) {
+            switch(data.type) {
+                case 'power_update':
+                    updatePowerMetrics(data.data);
+                    break;
+                case 'traffic_update':
+                    updateTrafficStatus(data.data);
+                    break;
+                case 'alert':
+                    addAlert(data.data);
+                    break;
+                case 'prediction':
+                    updatePredictions(data.data);
+                    break;
+            }
+        }
+        
+        // ===================== DATA UPDATES =====================
+        
+        async function loadSystemData() {
+            try {
+                const response = await fetch('/api/v2/system/state', {
+                    headers: {
+                        'Authorization': 'Bearer your-jwt-token'
+                    }
+                });
+                
+                systemData = await response.json();
+                updateAllVisualizations();
+                
+            } catch (error) {
+                console.error('Error loading system data:', error);
+            }
+        }
+        
+        function updateAllVisualizations() {
+            // Update metrics
+            updateMetrics();
+            
+            // Update map
+            updateMapLayers();
+            
+            // Update charts
+            updateCharts();
+        }
+        
+        function updateMetrics() {
+            if (systemData.power) {
+                document.getElementById('totalLoad').textContent = 
+                    Math.round(systemData.power.total_load_mw).toLocaleString();
+            }
+            
+            if (systemData.metrics) {
+                document.getElementById('systemHealth').textContent = 
+                    systemData.metrics.health_score + '%';
+            }
+        }
+        
+        function updateMapLayers() {
+            // Update substations, traffic lights, etc.
+            // Implementation depends on your data structure
+        }
+        
+        function updateCharts() {
+            // Update load chart
+            if (systemData.predictions && systemData.predictions.load_forecast) {
+                const forecast = systemData.predictions.load_forecast;
+                charts.load.data.datasets[0].data = forecast.values;
+                charts.load.update();
+            }
+            
+            // Update traffic chart
+            if (systemData.traffic) {
+                charts.traffic.data.datasets[0].data = [
+                    systemData.traffic.green_lights,
+                    systemData.traffic.yellow_lights,
+                    systemData.traffic.red_lights,
+                    systemData.traffic.off_lights
+                ];
+                charts.traffic.update();
+            }
+        }
+        
+        // ===================== ALERTS =====================
+        
+        function addAlert(alert) {
+            const alertsList = document.getElementById('alertsList');
+            
+            const alertElement = document.createElement('div');
+            alertElement.className = `alert-item ${alert.severity === 'critical' ? 'critical' : ''}`;
+            alertElement.innerHTML = `
+                <div class="alert-time">${new Date(alert.timestamp).toLocaleTimeString()}</div>
+                <div class="alert-message">${alert.message}</div>
+            `;
+            
+            alertsList.insertBefore(alertElement, alertsList.firstChild);
+            
+            // Keep only last 10 alerts
+            while (alertsList.children.length > 10) {
+                alertsList.removeChild(alertsList.lastChild);
+            }
+        }
+        
+        // ===================== AI ASSISTANT =====================
+        
+        function toggleAI() {
+            const assistant = document.getElementById('aiAssistant');
+            assistant.classList.toggle('active');
+        }
+        
+        async function handleAIInput(event) {
+            if (event.key === 'Enter') {
+                const input = event.target;
+                const question = input.value;
+                
+                if (!question) return;
+                
+                // Add user message
+                addAIMessage(question, 'user');
+                
+                // Clear input
+                input.value = '';
+                
+                // Get AI response
+                const response = await getAIResponse(question);
+                addAIMessage(response, 'ai');
+            }
+        }
+        
+        function addAIMessage(message, sender) {
+            const messagesContainer = document.getElementById('aiMessages');
+            
+            const messageElement = document.createElement('div');
+            messageElement.className = 'ai-message';
+            messageElement.innerHTML = `<strong>${sender === 'user' ? 'You' : 'AI'}:</strong> ${message}`;
+            
+            messagesContainer.appendChild(messageElement);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+        
+        async function getAIResponse(question) {
+            // In production, this would call your AI API
+            // For now, return contextual responses
+            
+            if (question.toLowerCase().includes('failure')) {
+                return 'Based on current patterns, I predict a 12% risk of cascading failure in the Times Square substation within the next 4 hours. Recommend preventive load shedding.';
+            } else if (question.toLowerCase().includes('traffic')) {
+                return 'Traffic flow is optimal with 95% lights operational. Current green wave efficiency on 7th Avenue is 87%.';
+            } else {
+                return 'System is operating normally. All ML models are active and monitoring.';
+            }
+        }
+        
+        // ===================== VIEW SWITCHING =====================
+        
+        function switchView(view) {
+            // Update nav
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            event.target.closest('.nav-item').classList.add('active');
+            
+            // Switch view logic would go here
+            console.log('Switching to view:', view);
+        }
+        
+        function setMapStyle(style) {
+            // Update buttons
+            document.querySelectorAll('.view-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            // Change map style
+            if (style === '3d') {
+                map.setPitch(60);
+                map.setBearing(-20);
+            } else if (style === 'satellite') {
+                map.setStyle('mapbox://styles/mapbox/satellite-v9');
+            } else {
+                map.setPitch(0);
+                map.setBearing(0);
+                map.setStyle('mapbox://styles/mapbox/dark-v11');
+            }
+        }
+        
+        // ===================== AUTO-UPDATE =====================
+        
+        function startDataUpdates() {
+            // Update every 5 seconds
+            setInterval(loadSystemData, 5000);
+            
+            // Simulate real-time metrics
+            setInterval(() => {
+                // Animate metrics
+                const load = 2500 + Math.random() * 100;
+                document.getElementById('totalLoad').textContent = Math.round(load).toLocaleString();
+                
+                // Add random alerts
+                if (Math.random() > 0.95) {
+                    addAlert({
+                        timestamp: new Date(),
+                        severity: Math.random() > 0.7 ? 'critical' : 'warning',
+                        message: 'Voltage deviation detected in Sector 7'
+                    });
+                }
+            }, 3000);
+        }
+        
+        // ===================== WINDOW RESIZE =====================
+        
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
