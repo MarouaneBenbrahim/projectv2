@@ -73,7 +73,7 @@ def simulation_loop():
                 power_grid.run_power_flow("dc")
             
             system_state['current_time'] += 1
-            time.sleep(0.1 / system_state['simulation_speed'])
+            time.sleep(0.01 / system_state['simulation_speed'])
             
         except Exception as e:
             print(f"Simulation error: {e}")
@@ -211,7 +211,47 @@ def spawn_vehicles():
         'spawned': spawned,
         'total_vehicles': sumo_manager.stats['total_vehicles']
     })
-
+@app.route('/api/test/ev_rush', methods=['POST'])
+def test_ev_rush():
+    """Test scenario: spawn many low-battery EVs"""
+    if not system_state['sumo_running']:
+        return jsonify({'success': False, 'message': 'Start SUMO first'})
+    
+    # Spawn 30 EVs with very low battery
+    spawned = 0
+    for i in range(30):
+        vehicle_id = f"test_ev_{i}"
+        try:
+            # Get random edges
+            import traci
+            edges = [e for e in traci.edge.getIDList() if not e.startswith(':')]
+            if len(edges) >= 2:
+                origin = edges[i % len(edges)]
+                dest = edges[(i + 10) % len(edges)]
+                
+                # Create route
+                route = traci.simulation.findRoute(origin, dest)
+                if route and route.edges:
+                    route_id = f"test_route_{i}"
+                    traci.route.add(route_id, route.edges)
+                    
+                    # Add EV with VERY low battery
+                    traci.vehicle.add(vehicle_id, route_id, typeID="ev_sedan", depart="now")
+                    traci.vehicle.setColor(vehicle_id, (255, 0, 0, 255))  # Red for low battery
+                    traci.vehicle.setMaxSpeed(vehicle_id, 40)  # Fast movement
+                    
+                    # Set very low battery (10-20%)
+                    battery = 75000 * random.uniform(0.10, 0.20)
+                    traci.vehicle.setParameter(vehicle_id, "device.battery.actualBatteryCapacity", str(battery))
+                    
+                    spawned += 1
+        except:
+            pass
+    
+    return jsonify({
+        'success': True,
+        'message': f'Spawned {spawned} low-battery EVs for testing'
+    })
 @app.route('/api/sumo/stop', methods=['POST'])
 def stop_sumo():
     """Stop SUMO simulation"""
@@ -701,6 +741,16 @@ HTML_COMPLETE_TEMPLATE = '''
         input:checked + .slider:before {
             transform: translateX(22px);
         }
+        @keyframes pulse {
+            0%, 100% { 
+                transform: scale(1);
+                box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            }
+            50% { 
+                transform: scale(1.2);
+                box-shadow: 0 3px 8px rgba(255,0,102,0.6);
+            }
+        }
         
         /* Status Bar */
         .status-bar {
@@ -876,6 +926,9 @@ HTML_COMPLETE_TEMPLATE = '''
                 <button class="btn btn-secondary" onclick="spawnVehicles(10)" id="spawn10-btn" disabled>
                     ➕ Add 10 Cars
                 </button>
+                <button class="btn btn-danger" onclick="testEVRush()" id="test-rush-btn" disabled>
+                    🔋 Test EV Rush
+                </button>
             </div>
         </div>
         
@@ -1024,6 +1077,7 @@ HTML_COMPLETE_TEMPLATE = '''
         let markers = [];
         let vehicleMarkers = {};  // Keep for cleanup but won't use for new vehicles
         let vehicleLayerInitialized = false;
+        let evStationLayerInitialized = false;
         let layers = {
             lights: true,
             vehicles: true,
@@ -1046,12 +1100,19 @@ HTML_COMPLETE_TEMPLATE = '''
                 renderNetwork();
                 if (layers.vehicles) {
                     renderVehicles();
+            renderEVStations();
                 }
             } catch (error) {
                 console.error('Error loading network state:', error);
             }
         }
-        
+        async function testEVRush() {
+            const response = await fetch('/api/test/ev_rush', {method: 'POST'});
+            const result = await response.json();
+            if (result.success) {
+                alert(result.message);
+            }
+        }
         // Update UI
         function updateUI() {
             if (!networkState) return;
@@ -1192,6 +1253,151 @@ HTML_COMPLETE_TEMPLATE = '''
             vehicleLayerInitialized = true;
         }
         
+        // Initialize EV station layer (call once)
+        function initializeEVStationLayer() {
+            if (evStationLayerInitialized) return;
+            
+            // Add GeoJSON source for EV stations
+            map.addSource('ev-stations', {
+                type: 'geojson',
+                data: {
+                    type: 'FeatureCollection',
+                    features: []
+                }
+            });
+            
+            // Base circle for station (background)
+            map.addLayer({
+                id: 'ev-stations-layer',
+                type: 'circle',
+                source: 'ev-stations',
+                paint: {
+                    'circle-radius': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        12, 6,
+                        14, 8,
+                        16, 10,
+                        18, 14
+                    ],
+                    'circle-color': ['get', 'color'],
+                    'circle-opacity': 0.95,
+                    'circle-stroke-width': 2,
+                    'circle-stroke-color': '#ffffff',
+                    'circle-stroke-opacity': 0.9
+                }
+            });
+
+            // Center lightning icon to preserve original look
+            map.addLayer({
+                id: 'ev-stations-icon',
+                type: 'symbol',
+                source: 'ev-stations',
+                layout: {
+                    'text-field': '⚡',
+                    'text-size': [
+                        'interpolate', ['linear'], ['zoom'],
+                        12, 12,
+                        14, 14,
+                        16, 16,
+                        18, 20
+                    ],
+                    'text-allow-overlap': true,
+                    'text-ignore-placement': true
+                },
+                paint: {
+                    'text-color': '#ffffff',
+                    'text-halo-color': '#000000',
+                    'text-halo-width': 0.6
+                }
+            });
+
+            // Badge background (shows when charging_count > 0)
+            map.addLayer({
+                id: 'ev-stations-badge-bg',
+                type: 'circle',
+                source: 'ev-stations',
+                filter: ['>', ['get', 'charging_count'], 0],
+                paint: {
+                    'circle-radius': [
+                        'interpolate', ['linear'], ['zoom'],
+                        12, 7,
+                        16, 8,
+                        18, 10
+                    ],
+                    'circle-color': [
+                        'case',
+                        ['>=', ['get', 'charging_count'], ['get', 'chargers']], '#ff0000',
+                        ['>=', ['get', 'charging_count'], ['*', ['get', 'chargers'], 0.8]], '#ffa500',
+                        '#00ff00'
+                    ],
+                    'circle-stroke-color': '#ffffff',
+                    'circle-stroke-width': 2,
+                    'circle-opacity': 1.0,
+                    'circle-translate': [10, -10],
+                    'circle-translate-anchor': 'map'
+                }
+            });
+
+            // Badge text (charging count) on top-right
+            map.addLayer({
+                id: 'ev-stations-badge-text',
+                type: 'symbol',
+                source: 'ev-stations',
+                filter: ['>', ['get', 'charging_count'], 0],
+                layout: {
+                    'text-field': ['to-string', ['get', 'charging_count']],
+                    'text-size': [
+                        'interpolate', ['linear'], ['zoom'],
+                        12, 11,
+                        16, 12,
+                        18, 14
+                    ],
+                    'text-allow-overlap': true,
+                    'text-ignore-placement': true
+                },
+                paint: {
+                    'text-color': '#ffffff',
+                    'text-halo-color': '#000000',
+                    'text-halo-width': 0.6,
+                    'text-translate': [10, -10],
+                    'text-translate-anchor': 'map'
+                }
+            });
+            
+            // Add click handler for EV station info
+            function onEVClick(e) {
+                const props = e.features[0].properties;
+                
+                new mapboxgl.Popup()
+                    .setLngLat(e.lngLat)
+                    .setHTML(`
+                        <strong>${props.name}</strong><br>
+                        Chargers: ${props.chargers}<br>
+                        Charging: <strong>${props.charging_count}/${props.chargers}</strong><br>
+                        Substation: ${props.substation}<br>
+                        Status: <span style="color: ${props.operational ? '#00ff88' : '#ff0000'}">
+                            ${props.operational ? '✅ Online' : '❌ Offline'}
+                        </span>
+                    `)
+                    .addTo(map);
+            }
+            map.on('click', 'ev-stations-layer', onEVClick);
+            map.on('click', 'ev-stations-icon', onEVClick);
+            map.on('click', 'ev-stations-badge-bg', onEVClick);
+            map.on('click', 'ev-stations-badge-text', onEVClick);
+            
+            // Change cursor on hover for all ev layers
+            const evHoverLayers = ['ev-stations-layer', 'ev-stations-icon', 'ev-stations-badge-bg', 'ev-stations-badge-text'];
+            evHoverLayers.forEach(layerId => {
+                map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
+                map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
+            });
+            
+            evStationLayerInitialized = true;
+        }
+        
         // Clean up old vehicle markers
         function cleanupOldVehicleMarkers() {
             for (const [id, marker] of Object.entries(vehicleMarkers)) {
@@ -1222,7 +1428,10 @@ HTML_COMPLETE_TEMPLATE = '''
             }
             
             // Convert vehicles to GeoJSON features
-            const features = networkState.vehicles.map(vehicle => ({
+            // Convert vehicles to GeoJSON features (hide charging vehicles)
+            const features = networkState.vehicles
+                .filter(vehicle => !vehicle.is_charging)  // Hide charging vehicles
+                .map(vehicle => ({
                 type: 'Feature',
                 geometry: {
                     type: 'Point',
@@ -1235,8 +1444,10 @@ HTML_COMPLETE_TEMPLATE = '''
                     is_ev: vehicle.is_ev || false,
                     is_charging: vehicle.is_charging || false,
                     battery_percent: vehicle.battery_percent || 100,
-                    color: vehicle.is_charging ? '#ffa500' :
-                           vehicle.is_ev ? '#00ff00' :
+                    color: vehicle.is_charging ? '#00ffff' :  // Cyan for charging
+                           vehicle.battery_percent < 20 ? '#ff0000' :  // Red for critical
+                           vehicle.battery_percent < 30 ? '#ffa500' :  // Orange for low
+                           vehicle.is_ev ? '#00ff00' :  // Green for good battery
                            vehicle.type === 'taxi' ? '#ffff00' :
                            '#6464ff',
                     angle: vehicle.angle || 0,
@@ -1249,6 +1460,70 @@ HTML_COMPLETE_TEMPLATE = '''
             
             // Update the source data
             const source = map.getSource('vehicles');
+            if (source) {
+                source.setData({
+                    type: 'FeatureCollection',
+                    features: features
+                });
+            }
+        }
+        
+        // Render EV stations using GeoJSON layer (FIXED - same as vehicles)
+        function renderEVStations() {
+            if (!networkState || !networkState.ev_stations) {
+                if (map.getLayer('ev-stations-layer')) {
+                    map.setLayoutProperty('ev-stations-layer', 'visibility', 'none');
+                }
+                return;
+            }
+            
+            // Initialize layer if needed
+            if (!evStationLayerInitialized && map.loaded()) {
+                initializeEVStationLayer();
+            }
+            
+            if (!map.getSource('ev-stations')) return;
+            
+            // Show/hide EV station layers based on toggle
+            ['ev-stations-layer','ev-stations-icon','ev-stations-badge-bg','ev-stations-badge-text'].forEach(id => {
+                if (map.getLayer(id)) {
+                    map.setLayoutProperty(id, 'visibility', layers.ev ? 'visible' : 'none');
+                }
+            });
+            
+            // Convert EV stations to GeoJSON features
+            const features = networkState.ev_stations.map(ev => {
+                // Count vehicles charging at this station
+                let chargingCount = 0;
+                if (networkState.vehicles) {
+                    chargingCount = networkState.vehicles.filter(v => 
+                        v.is_charging && v.assigned_station === ev.id
+                    ).length;
+                }
+                
+                // Base color: keep station icon consistent (blue when operational, gray when offline)
+                let color = ev.operational ? '#00aaff' : '#666';
+                
+                return {
+                    type: 'Feature',
+                    geometry: {
+                        type: 'Point',
+                        coordinates: [ev.lon, ev.lat]
+                    },
+                    properties: {
+                        id: ev.id,
+                        name: ev.name,
+                        chargers: ev.chargers,
+                        charging_count: chargingCount,
+                        operational: ev.operational,
+                        substation: ev.substation,
+                        color: color
+                    }
+                };
+            });
+            
+            // Update the source data
+            const source = map.getSource('ev-stations');
             if (source) {
                 source.setData({
                     type: 'FeatureCollection',
@@ -1305,52 +1580,65 @@ HTML_COMPLETE_TEMPLATE = '''
                 }
             });
             
-            // EV stations
-            const existingEvIds = new Set();
-            if (layers.ev) {
-                networkState.ev_stations.forEach(ev => {
-                    existingEvIds.add(ev.id);
-                    let marker = evStationMarkers[ev.id];
-                    const charging = ev.vehicles_charging || 0;
-                    if (!marker) {
-                        const el = document.createElement('div');
-                        el.style.width = '28px';
-                        el.style.height = '28px';
-                        el.style.borderRadius = '6px';
-                        el.style.border = '2px solid #fff';
-                        el.style.display = 'flex';
-                        el.style.alignItems = 'center';
-                        el.style.justifyContent = 'center';
-                        el.style.fontSize = '16px';
-                        el.style.fontWeight = 'bold';
-                        el.style.color = '#fff';
-                        el.innerHTML = '⚡';
-                        marker = new mapboxgl.Marker(el)
-                            .setLngLat([ev.lon, ev.lat])
-                            .setPopup(new mapboxgl.Popup({offset: 25}))
-                            .addTo(map);
-                        evStationMarkers[ev.id] = marker;
+// EV stations with charging counters (FIXED - using GeoJSON layer)
+            if (layers.ev && networkState.ev_stations) {
+                // Initialize layer if needed
+                if (!evStationLayerInitialized && map.loaded()) {
+                    initializeEVStationLayer();
+                }
+                
+                if (map.getSource('ev-stations')) {
+                    // Convert EV stations to GeoJSON features
+                    const features = networkState.ev_stations.map(ev => {
+                        // Count vehicles charging at this station
+                        let chargingCount = 0;
+                        if (networkState.vehicles) {
+                            chargingCount = networkState.vehicles.filter(v => 
+                                v.is_charging && v.assigned_station === ev.id
+                            ).length;
+                        }
+                        
+                        // Base color: keep station icon consistent (blue when operational, gray when offline)
+                        let color = ev.operational ? '#00aaff' : '#666';
+                        
+                        return {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Point',
+                                coordinates: [ev.lon, ev.lat]
+                            },
+                            properties: {
+                                id: ev.id,
+                                name: ev.name,
+                                chargers: ev.chargers,
+                                charging_count: chargingCount,
+                                operational: ev.operational,
+                                substation: ev.substation,
+                                color: color
+                            }
+                        };
+                    });
+                    
+                    // Update the source data
+                    const source = map.getSource('ev-stations');
+                    if (source) {
+                        source.setData({
+                            type: 'FeatureCollection',
+                            features: features
+                        });
                     }
                     
-                    const el = evStationMarkers[ev.id].getElement();
-                    el.style.background = ev.operational ? 'linear-gradient(135deg, #00aaff 0%, #0088dd 100%)' : '#666';
-                    el.style.boxShadow = ev.operational ? '0 2px 10px rgba(0,170,255,0.5)' : '0 2px 5px rgba(0,0,0,0.3)';
-                    evStationMarkers[ev.id].setPopup(new mapboxgl.Popup({offset: 25}).setHTML(`
-                        <strong>${ev.name}</strong><br>
-                        Chargers: ${ev.chargers}<br>
-                        Charging: ${charging}/${ev.chargers}<br>
-                        Substation: ${ev.substation}<br>
-                        Status: <span style="color: ${ev.operational ? '#00ff88' : '#ff0000'}">${ev.operational ? '✅ Online' : '❌ Offline'}</span>
-                    `));
-                });
-            }
-            
-            Object.keys(evStationMarkers).forEach(id => {
-                if (!layers.ev || !existingEvIds.has(id)) {
-                    evStationMarkers[id].remove();
-                    delete evStationMarkers[id];
+                    // Show/hide EV station layer based on toggle
+                    if (map.getLayer('ev-stations-layer')) {
+                        map.setLayoutProperty('ev-stations-layer', 'visibility', 'visible');
+                    }
                 }
-            });
+            } else {
+                // Hide EV station layer if not enabled
+                if (map.getLayer('ev-stations-layer')) {
+                    map.setLayoutProperty('ev-stations-layer', 'visibility', 'none');
+                }
+            }
             
             // Cables
             if (networkState.cables) {
@@ -1522,6 +1810,7 @@ HTML_COMPLETE_TEMPLATE = '''
                 document.getElementById('stop-sumo-btn').disabled = false;
                 document.getElementById('spawn-btn').disabled = false;
                 document.getElementById('spawn10-btn').disabled = false;
+                document.getElementById('test-rush-btn').disabled = false;
                 alert(result.message);
             } else {
                 alert('Failed to start SUMO: ' + result.message);
@@ -1618,6 +1907,9 @@ HTML_COMPLETE_TEMPLATE = '''
         map.on('load', () => {
             // Initialize vehicle layer
             initializeVehicleLayer();
+            
+            // Initialize EV station layer
+            initializeEVStationLayer();
             
             // Clean up any old markers
             cleanupOldVehicleMarkers();
