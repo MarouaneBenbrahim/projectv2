@@ -373,10 +373,15 @@ class ManhattanSUMOManager:
         import traci
         spawned = 0
         
-        spawn_edges = self.spawn_edges if self.spawn_edges else self.edges
-        if not spawn_edges:
-            print("No valid spawn edges found")
+        # Get ACTUAL edges from the live SUMO network (not from stored list)
+        all_edges = traci.edge.getIDList()
+        valid_edges = [e for e in all_edges if not e.startswith(':') and traci.edge.getLaneNumber(e) > 0]
+        
+        if not valid_edges:
+            print("ERROR: No valid edges found in SUMO network")
             return 0
+        
+        print(f"Spawning {count} vehicles using {len(valid_edges)} valid edges...")
         
         for i in range(count):
             vehicle_id = f"veh_{self.stats['total_vehicles'] + i}"
@@ -384,33 +389,32 @@ class ManhattanSUMOManager:
             is_ev = random.random() < ev_percentage
             if is_ev:
                 vtype = "ev_sedan" if random.random() < 0.6 else "ev_suv"
+                initial_soc = random.uniform(0.3, 0.9)
             else:
                 vtype = random.choice(["car", "taxi"])
+                initial_soc = 1.0
             
-            route_created = False
-            
-            for attempt in range(5):
+            # Try multiple times to find a valid route
+            spawn_success = False
+            for attempt in range(10):
                 try:
-                    # Use validated edges
-                    origin_idx = random.randint(0, min(100, len(spawn_edges)-1))
-                    dest_idx = random.randint(0, min(100, len(spawn_edges)-1))
+                    # Pick random edges from ACTUAL network edges
+                    origin = random.choice(valid_edges)
+                    destination = random.choice(valid_edges)
                     
-                    if origin_idx != dest_idx:
-                        origin = spawn_edges[origin_idx]
-                        destination = spawn_edges[dest_idx]
-                        
+                    # Make sure they're different
+                    while destination == origin and len(valid_edges) > 1:
+                        destination = random.choice(valid_edges)
+                    
+                    # Use SUMO's built-in routing
+                    route_result = traci.simulation.findRoute(origin, destination)
+                    
+                    if route_result and route_result.edges and len(route_result.edges) > 0:
+                        # Create and add the route
                         route_id = f"route_{vehicle_id}_{attempt}"
+                        traci.route.add(route_id, route_result.edges)
                         
-                        # Try to compute actual route
-                        try:
-                            route = traci.simulation.findRoute(origin, destination)
-                            if route and route.edges:
-                                traci.route.add(route_id, route.edges)
-                            else:
-                                traci.route.add(route_id, [origin, destination])
-                        except:
-                            traci.route.add(route_id, [origin, destination])
-                        
+                        # Add the vehicle
                         traci.vehicle.add(
                             vehicle_id,
                             route_id,
@@ -418,24 +422,26 @@ class ManhattanSUMOManager:
                             depart="now"
                         )
                         
-                        route_created = True
+                        # Set color
+                        if is_ev:
+                            traci.vehicle.setColor(vehicle_id, (0, 255, 0, 255))  # Green
+                        elif vtype == "taxi":
+                            traci.vehicle.setColor(vehicle_id, (255, 255, 0, 255))  # Yellow
+                        else:
+                            traci.vehicle.setColor(vehicle_id, (100, 100, 255, 255))  # Blue
                         
-                        initial_soc = 1.0
+                        # Set battery for EVs
                         if is_ev:
                             battery_capacity = 75000 if vtype == "ev_sedan" else 100000
-                            initial_soc = random.uniform(0.3, 0.9)
-                            
                             traci.vehicle.setParameter(vehicle_id, "device.battery.maximumBatteryCapacity", str(battery_capacity))
                             traci.vehicle.setParameter(vehicle_id, "device.battery.actualBatteryCapacity", str(battery_capacity * initial_soc))
                             traci.vehicle.setParameter(vehicle_id, "has.battery.device", "true")
                         
-                        vtype_enum = VehicleType.CAR
-                        if vtype == "taxi":
-                            vtype_enum = VehicleType.TAXI
-                        elif vtype == "ev_sedan":
-                            vtype_enum = VehicleType.EV_SEDAN
-                        elif vtype == "ev_suv":
-                            vtype_enum = VehicleType.EV_SUV
+                        # Store vehicle data
+                        vtype_enum = VehicleType.EV_SEDAN if vtype == "ev_sedan" else \
+                                    VehicleType.EV_SUV if vtype == "ev_suv" else \
+                                    VehicleType.TAXI if vtype == "taxi" else \
+                                    VehicleType.CAR
                         
                         self.vehicles[vehicle_id] = Vehicle(
                             vehicle_id,
@@ -447,11 +453,12 @@ class ManhattanSUMOManager:
                                 is_ev=is_ev,
                                 battery_capacity_kwh=75 if vtype == "ev_sedan" else (100 if vtype == "ev_suv" else 0),
                                 current_soc=initial_soc,
-                                route=[origin, destination]
+                                route=route_result.edges
                             )
                         )
                         
                         spawned += 1
+                        spawn_success = True
                         
                         if is_ev:
                             self.stats['ev_vehicles'] += 1
@@ -460,9 +467,13 @@ class ManhattanSUMOManager:
                         
                 except Exception as e:
                     continue
+            
+            if not spawn_success:
+                print(f"  ⚠️ Failed to spawn {vehicle_id} after 10 attempts")
         
         self.stats['total_vehicles'] += spawned
-        print(f"Successfully spawned {spawned}/{count} vehicles")
+        print(f"✅ Successfully spawned {spawned}/{count} vehicles")
+        
         return spawned
     
     def get_vehicle_positions_for_visualization(self) -> List[Dict]:
@@ -551,28 +562,93 @@ class ManhattanSUMOManager:
             return '#6464ff'  # Default blue for gas vehicles
     
     def update_traffic_lights(self):
-        """Sync traffic lights from power grid to SUMO"""
+        """Sync traffic lights from power grid to SUMO - FIXED"""
         
         if not self.running:
             return
         
-        for power_tl_id, sumo_tl_id in self.tl_power_to_sumo.items():
-            if power_tl_id in self.integrated_system.traffic_lights:
-                power_tl = self.integrated_system.traffic_lights[power_tl_id]
+        import traci
+        
+        # Get all SUMO traffic lights
+        tl_ids = traci.trafficlight.getIDList()
+        
+        for tl_id in tl_ids:
+            try:
+                # Get the current signal state to know its structure
+                current_state = traci.trafficlight.getRedYellowGreenState(tl_id)
+                state_length = len(current_state)
                 
-                try:
+                # Find corresponding power grid traffic light
+                power_tl = None
+                if tl_id in self.tl_sumo_to_power:
+                    power_tl_id = self.tl_sumo_to_power[tl_id]
+                    if power_tl_id in self.integrated_system.traffic_lights:
+                        power_tl = self.integrated_system.traffic_lights[power_tl_id]
+                
+                # Set traffic light state based on power status
+                if power_tl:
                     if not power_tl['powered']:
-                        program = traci.trafficlight.getProgram(sumo_tl_id)
-                        phases = traci.trafficlight.getAllProgramLogics(sumo_tl_id)[0].phases
-                        
-                        red_state = 'r' * len(phases[0].state) if phases else 'rrrr'
-                        
-                        traci.trafficlight.setRedYellowGreenState(sumo_tl_id, red_state)
+                        # No power = all red (vehicles MUST stop)
+                        red_state = 'r' * state_length
+                        traci.trafficlight.setRedYellowGreenState(tl_id, red_state)
                     else:
-                        pass
-                        
-                except Exception as e:
+                        # Set based on power grid phase
+                        if power_tl['phase'] == 'green':
+                            # Create green phase pattern
+                            if state_length == 4:
+                                new_state = 'GGrr'  # Green N-S, Red E-W
+                            elif state_length == 8:
+                                new_state = 'GGGGrrrr'  # Green main direction
+                            else:
+                                # General pattern: half green, half red
+                                half = state_length // 2
+                                new_state = 'G' * half + 'r' * (state_length - half)
+                            traci.trafficlight.setRedYellowGreenState(tl_id, new_state)
+                            
+                        elif power_tl['phase'] == 'yellow':
+                            # Yellow phase
+                            if state_length == 4:
+                                new_state = 'yyrr'
+                            elif state_length == 8:
+                                new_state = 'yyyyrrrr'
+                            else:
+                                half = state_length // 2
+                                new_state = 'y' * half + 'r' * (state_length - half)
+                            traci.trafficlight.setRedYellowGreenState(tl_id, new_state)
+                            
+                        else:  # red phase
+                            # Red main, green cross
+                            if state_length == 4:
+                                new_state = 'rrGG'  # Red N-S, Green E-W
+                            elif state_length == 8:
+                                new_state = 'rrrrGGGG'  # Red main, Green cross
+                            else:
+                                half = state_length // 2
+                                new_state = 'r' * half + 'G' * (state_length - half)
+                            traci.trafficlight.setRedYellowGreenState(tl_id, new_state)
+                else:
+                    # No mapping found - set to normal operation
+                    # Don't override, let SUMO handle it
                     pass
+                    
+            except Exception as e:
+                # Continue with other lights if one fails
+                pass
+
+    def force_all_lights_red(self):
+        """Force all traffic lights to red (for testing)"""
+        if not self.running:
+            return
+        
+        import traci
+        for tl_id in traci.trafficlight.getIDList():
+            try:
+                state = traci.trafficlight.getRedYellowGreenState(tl_id)
+                red_state = 'r' * len(state)
+                traci.trafficlight.setRedYellowGreenState(tl_id, red_state)
+            except:
+                pass
+        print("⚠️ All traffic lights set to RED")        
     
     def step(self):
         """Advance simulation one step"""
@@ -582,7 +658,7 @@ class ManhattanSUMOManager:
         
         try:
             traci.simulationStep()
-            
+            self.update_traffic_lights()
             self._update_vehicles()
             self._handle_ev_charging()
             self._update_statistics()
