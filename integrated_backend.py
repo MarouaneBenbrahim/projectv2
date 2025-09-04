@@ -686,6 +686,18 @@ class ManhattanIntegratedSystem:
     def get_network_state(self) -> Dict[str, Any]:
         """Get complete network state for visualization"""
         
+        # Calculate base load
+        base_load_mw = sum(s['load_mw'] for s in self.substations.values())
+        
+        # Add EV charging load
+        ev_charging_load_mw = 0
+        for ev_station in self.ev_stations.values():
+            if 'current_load_kw' in ev_station:
+                ev_charging_load_mw += ev_station['current_load_kw'] / 1000
+        
+        # Total load including EV charging
+        total_load_mw = base_load_mw + ev_charging_load_mw
+        
         return {
             'substations': [
                 {
@@ -693,7 +705,7 @@ class ManhattanIntegratedSystem:
                     'lat': data['lat'],
                     'lon': data['lon'],
                     'capacity_mva': data['capacity_mva'],
-                    'load_mw': data['load_mw'],
+                    'load_mw': data['load_mw'] + data.get('ev_load_mw', 0),  # Include EV load
                     'operational': data['operational'],
                     'coverage_area': data['coverage_area']
                 }
@@ -720,7 +732,9 @@ class ManhattanIntegratedSystem:
                     'lon': ev['lon'],
                     'chargers': ev['chargers'],
                     'operational': ev['operational'],
-                    'substation': ev['substation']
+                    'substation': ev['substation'],
+                    'vehicles_charging': ev.get('vehicles_charging', 0),  # Add this
+                    'current_load_kw': ev.get('current_load_kw', 0)  # Add this
                 }
                 for ev in self.ev_stations.values()
             ],
@@ -740,7 +754,9 @@ class ManhattanIntegratedSystem:
                 'black_lights': sum(1 for tl in self.traffic_lights.values() if tl.get('color') == '#000000'),
                 'total_ev_stations': len(self.ev_stations),
                 'operational_ev_stations': sum(1 for ev in self.ev_stations.values() if ev['operational']),
-                'total_load_mw': sum(s['load_mw'] for s in self.substations.values()),
+                'total_load_mw': total_load_mw,  # Updated to include EV charging
+                'base_load_mw': base_load_mw,  # Base load without EVs
+                'ev_charging_load_mw': ev_charging_load_mw,  # Just EV charging load
                 'total_primary_cables': len(self.primary_cables),
                 'total_secondary_cables': len(self.secondary_cables),
                 'operational_primary_cables': sum(1 for c in self.primary_cables if c['operational']),

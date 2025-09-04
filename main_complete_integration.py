@@ -83,29 +83,149 @@ def simulation_loop():
 def update_ev_power_loads():
     """Update power grid loads based on EV charging"""
     
+    print(f"[DEBUG] update_ev_power_loads called")
+    
     # Get current charging statistics from SUMO
     if not sumo_manager.running:
+        print(f"[DEBUG] SUMO not running, skipping")
         return
         
     stats = sumo_manager.get_statistics()
+    print(f"[DEBUG] Stats - Vehicles charging: {stats.get('vehicles_charging', 0)}")
     
     # Track charging by station
     charging_by_station = {}
     for vehicle in sumo_manager.vehicles.values():
-        if vehicle.is_charging and vehicle.assigned_ev_station:
-            if vehicle.assigned_ev_station not in charging_by_station:
-                charging_by_station[vehicle.assigned_ev_station] = 0
-            charging_by_station[vehicle.assigned_ev_station] += 1
+        # Debug each EV
+        if vehicle.config.is_ev:
+            # Check if vehicle has charging attributes
+            has_is_charging = hasattr(vehicle, 'is_charging')
+            is_charging_val = has_is_charging and vehicle.is_charging
+            
+            # Additional check for charging_at_station attribute
+            has_charging_at = hasattr(vehicle, 'charging_at_station')
+            charging_at_val = has_charging_at and vehicle.charging_at_station
+            
+            # Debug output for EVs at stations
+            if vehicle.assigned_ev_station:
+                print(f"[DEBUG] {vehicle.id}: station={vehicle.assigned_ev_station}, is_charging={is_charging_val}, SOC={vehicle.config.current_soc:.2f}")
+            
+            # Count if actually charging
+            if is_charging_val or charging_at_val:
+                if vehicle.assigned_ev_station:
+                    if vehicle.assigned_ev_station not in charging_by_station:
+                        charging_by_station[vehicle.assigned_ev_station] = []
+                    charging_by_station[vehicle.assigned_ev_station].append(vehicle.id)
+    
+    # Convert to counts and show which vehicles are charging where
+    charging_counts = {}
+    for station_id, vehicles in charging_by_station.items():
+        charging_counts[station_id] = len(vehicles)
+        if vehicles:
+            station_name = integrated_system.ev_stations[station_id]['name']
+            print(f"[DEBUG] {station_name}: {len(vehicles)} charging - {', '.join(vehicles)}")
+    
+    print(f"[DEBUG] Charging by station summary: {charging_counts}")
     
     # Update each EV station's load
+    total_charging_kw = 0
     for ev_id, ev_station in integrated_system.ev_stations.items():
-        chargers_in_use = charging_by_station.get(ev_id, 0)
-        charging_power_kw = chargers_in_use * 7.2  # 7.2kW per Level 2 charger
+        chargers_in_use = charging_counts.get(ev_id, 0)
+        # 50kW DC fast charging per vehicle
+        charging_power_kw = chargers_in_use * 50  # 50kW per charger
+        total_charging_kw += charging_power_kw
         
         # Update the integrated system
         ev_station['vehicles_charging'] = chargers_in_use
         ev_station['current_load_kw'] = charging_power_kw
-
+        
+        # UPDATE PYPSA NETWORK LOAD
+        if chargers_in_use > 0:
+            # Find which substation this EV station is connected to
+            substation_name = ev_station['substation']
+            
+            print(f"[DEBUG] {ev_station['name']}: {chargers_in_use} vehicles = {charging_power_kw} kW")
+            
+            # Update the substation load in the integrated system
+            if substation_name in integrated_system.substations:
+                # Add EV charging load to substation
+                old_load = integrated_system.substations[substation_name].get('ev_load_mw', 0)
+                new_load = charging_power_kw / 1000  # Convert to MW
+                integrated_system.substations[substation_name]['ev_load_mw'] = new_load
+                
+                # Update PyPSA bus load
+                bus_name = f"{substation_name}_13.8kV"
+                if bus_name in power_grid.network.buses.index:
+                    # Find or create EV load at this bus
+                    ev_load_name = f"EV_{substation_name}"
+                    
+                    if ev_load_name not in power_grid.network.loads.index:
+                        # Create new load for EV charging
+                        power_grid.network.add(
+                            "Load",
+                            ev_load_name,
+                            bus=bus_name,
+                            p_set=new_load
+                        )
+                        print(f"[DEBUG] Created new EV load at {bus_name}: {new_load:.2f} MW")
+                    else:
+                        # Update existing load
+                        power_grid.network.loads.at[ev_load_name, 'p_set'] = new_load
+                        print(f"[DEBUG] Updated EV load at {bus_name}: {new_load:.2f} MW")
+    
+    print(f"[DEBUG] Total EV charging load: {total_charging_kw/1000:.2f} MW")
+    
+    # TRIGGER POWER FLOW AND CHECK FOR PROBLEMS
+    if total_charging_kw > 100:  # If more than 100kW (0.1MW) of EV charging
+        print(f"[DEBUG] Running power flow due to {total_charging_kw/1000:.2f} MW EV load")
+        try:
+            result = power_grid.run_power_flow("dc")
+            if result.converged:
+                print(f"[DEBUG] Power flow converged. Max line loading: {result.max_line_loading:.1%}")
+                
+                # CHECK FOR GRID STRESS
+                if result.max_line_loading > 0.9:  # Line loaded above 90%
+                    print("⚠️ WARNING: TRANSMISSION LINE OVERLOAD!")
+                    print(f"   Critical lines: {result.critical_lines}")
+                    
+                    # REDUCE CHARGING RATE AT AFFECTED STATIONS
+                    for ev_id, ev_station in integrated_system.ev_stations.items():
+                        if ev_station['vehicles_charging'] > 0:
+                            # Find most loaded substation
+                            if ev_station['substation'] in ['Times Square', 'Grand Central']:
+                                print(f"   🔌 REDUCING charging power at {ev_station['name']}")
+                                
+                                # Tell SUMO vehicles to slow charging
+                                for vehicle in sumo_manager.vehicles.values():
+                                    if hasattr(vehicle, 'is_charging') and vehicle.is_charging:
+                                        if vehicle.assigned_ev_station == ev_id:
+                                            # This is where we'd reduce charging rate
+                                            print(f"      - {vehicle.id} charging limited")
+                
+                if result.voltage_violations:
+                    print("⚠️ VOLTAGE VIOLATIONS DETECTED!")
+                    for violation in result.voltage_violations[:5]:
+                        print(f"   {violation}")
+                
+                # CHECK FOR TRANSFORMER OVERLOAD
+                for name, substation in integrated_system.substations.items():
+                    total_substation_load = substation['load_mw'] + substation.get('ev_load_mw', 0)
+                    capacity = substation['capacity_mva'] * 0.9  # Power factor
+                    
+                    loading_percent = (total_substation_load / capacity) * 100
+                    if loading_percent > 90:
+                        print(f"🔥 SUBSTATION OVERLOAD: {name} at {loading_percent:.1f}% capacity!")
+                        print(f"   Load: {total_substation_load:.1f} MW / {capacity:.1f} MW")
+                        
+                        # This is where we'd trip the substation or shed load
+                        if loading_percent > 100:
+                            print(f"   💥 {name} WOULD TRIP! (>100% loading)")
+                
+            else:
+                print(f"[DEBUG] Power flow did NOT converge - system stressed!")
+                
+        except Exception as e:
+            print(f"[DEBUG] Power flow error: {e}")
 # Start simulation thread
 sim_thread = threading.Thread(target=simulation_loop, daemon=True)
 sim_thread.start()
@@ -124,15 +244,33 @@ def get_network_state():
     
     # Add vehicle data if SUMO is running
     if system_state['sumo_running'] and sumo_manager.running:
-        # Get vehicle positions with more detail
         vehicles = []
-        for vehicle in sumo_manager.vehicles.values():
+        
+        # Create station charging counts
+        station_charging_counts = {}
+        station_queued_counts = {}
+        
+        vehicle_list = list(sumo_manager.vehicles.values())
+        
+        for vehicle in vehicle_list:
             try:
-                # Get position from SUMO
                 import traci
+                # Check if vehicle exists in SUMO
                 if vehicle.id in traci.vehicle.getIDList():
                     x, y = traci.vehicle.getPosition(vehicle.id)
                     lon, lat = traci.simulation.convertGeo(x, y)
+                    
+                    # Track charging at stations
+                    if hasattr(vehicle, 'is_charging') and vehicle.is_charging and vehicle.assigned_ev_station:
+                        if vehicle.assigned_ev_station not in station_charging_counts:
+                            station_charging_counts[vehicle.assigned_ev_station] = 0
+                        station_charging_counts[vehicle.assigned_ev_station] += 1
+                    
+                    # Track queued at stations
+                    if hasattr(vehicle, 'is_queued') and vehicle.is_queued and vehicle.assigned_ev_station:
+                        if vehicle.assigned_ev_station not in station_queued_counts:
+                            station_queued_counts[vehicle.assigned_ev_station] = 0
+                        station_queued_counts[vehicle.assigned_ev_station] += 1
                     
                     vehicles.append({
                         'id': vehicle.id,
@@ -143,7 +281,10 @@ def get_network_state():
                         'speed_kmh': round(vehicle.speed * 3.6, 1),
                         'soc': vehicle.config.current_soc if vehicle.config.is_ev else 1.0,
                         'battery_percent': round(vehicle.config.current_soc * 100) if vehicle.config.is_ev else 100,
-                        'is_charging': vehicle.is_charging,
+                        'is_charging': getattr(vehicle, 'is_charging', False),
+                        'is_queued': getattr(vehicle, 'is_queued', False),
+                        'is_circling': getattr(vehicle, 'is_circling', False),
+                        'is_stranded': getattr(vehicle, 'is_stranded', False),
                         'is_ev': vehicle.config.is_ev,
                         'distance_traveled': round(vehicle.distance_traveled, 1),
                         'waiting_time': round(vehicle.waiting_time, 1),
@@ -155,6 +296,11 @@ def get_network_state():
         
         state['vehicles'] = vehicles
         state['vehicle_stats'] = sumo_manager.get_statistics()
+        
+        # Update EV station charging counts
+        for ev_station in state['ev_stations']:
+            ev_station['vehicles_charging'] = station_charging_counts.get(ev_station['id'], 0)
+            ev_station['vehicles_queued'] = station_queued_counts.get(ev_station['id'], 0)
     else:
         state['vehicles'] = []
         state['vehicle_stats'] = {}
@@ -310,13 +456,35 @@ def fail_substation(substation):
     
     # Update SUMO traffic lights if running
     if system_state['sumo_running'] and sumo_manager.running:
+        # Update traffic lights - they go to YELLOW during blackout, not RED
         sumo_manager.update_traffic_lights()
         
-        # Also update EV station availability
+        # Handle blackout for traffic lights specifically
+        if hasattr(sumo_manager, 'handle_blackout_traffic_lights'):
+            sumo_manager.handle_blackout_traffic_lights([substation])
+        
+        # UPDATE EV STATION STATUS PROPERLY
         for ev_id, ev_station in integrated_system.ev_stations.items():
             if ev_station['substation'] == substation:
+                # Mark station as non-operational in integrated system
+                ev_station['operational'] = False
+                
+                # Update SUMO manager's station status
                 if ev_id in sumo_manager.ev_stations_sumo:
                     sumo_manager.ev_stations_sumo[ev_id]['available'] = 0
+                
+                # Update station manager's status if it exists
+                if hasattr(sumo_manager, 'station_manager') and sumo_manager.station_manager:
+                    if ev_id in sumo_manager.station_manager.stations:
+                        sumo_manager.station_manager.stations[ev_id]['operational'] = False
+                        
+                        # Call the blackout handler
+                        sumo_manager.station_manager.handle_blackout(substation)
+    
+    print(f"\n⚡ SUBSTATION FAILURE: {substation}")
+    print(f"   - Traffic lights: Set to YELLOW (caution mode)")
+    print(f"   - EV stations affected: {impact.get('ev_stations_affected', 0)}")
+    print(f"   - Load lost: {impact.get('load_lost_mw', 0):.1f} MW")
     
     return jsonify(impact)
 
@@ -331,11 +499,21 @@ def restore_substation(substation):
         if system_state['sumo_running'] and sumo_manager.running:
             sumo_manager.update_traffic_lights()
             
-            # Restore EV station availability
+            # RESTORE EV STATION STATUS
             for ev_id, ev_station in integrated_system.ev_stations.items():
                 if ev_station['substation'] == substation:
+                    # Mark station as operational
+                    ev_station['operational'] = True
+                    
+                    # Update SUMO manager
                     if ev_id in sumo_manager.ev_stations_sumo:
                         sumo_manager.ev_stations_sumo[ev_id]['available'] = ev_station['chargers']
+                    
+                    # Update station manager
+                    if hasattr(sumo_manager, 'station_manager') and sumo_manager.station_manager:
+                        if ev_id in sumo_manager.station_manager.stations:
+                            sumo_manager.station_manager.stations[ev_id]['operational'] = True
+                            print(f"   ✅ Restored {ev_station['name']} ONLINE")
     
     return jsonify({'success': success})
 
@@ -356,7 +534,22 @@ def restore_all():
                 sumo_manager.ev_stations_sumo[ev_id]['available'] = ev_station['chargers']
     
     return jsonify({'success': True, 'message': 'All systems restored'})
-
+@app.route('/api/debug/ev_stations')
+def debug_ev_stations():
+    """Debug endpoint to check EV station status"""
+    status = {}
+    
+    for ev_id, ev_station in integrated_system.ev_stations.items():
+        status[ev_id] = {
+            'name': ev_station['name'],
+            'substation': ev_station['substation'],
+            'operational': ev_station['operational'],
+            'substation_operational': integrated_system.substations[ev_station['substation']]['operational'],
+            'vehicles_charging': ev_station.get('vehicles_charging', 0),
+            'current_load_kw': ev_station.get('current_load_kw', 0)
+        }
+    
+    return jsonify(status)
 @app.route('/api/status')
 def get_status():
     """Get complete system status"""
@@ -893,8 +1086,23 @@ HTML_COMPLETE_TEMPLATE = '''
                     <div class="vehicle-stat-label">EVs</div>
                 </div>
                 <div class="vehicle-stat">
-                    <div class="vehicle-stat-value" id="charging-count">0</div>
-                    <div class="vehicle-stat-label">Charging</div>
+                    <div class="vehicle-stat-value" id="charging-count" style="color: #00ffff;">0</div>
+                    <div class="vehicle-stat-label">Charging/20</div>
+                </div>
+            </div>
+
+            <div class="vehicle-stats">
+                <div class="vehicle-stat">
+                    <div class="vehicle-stat-value" id="queued-count" style="color: #ffff00;">0</div>
+                    <div class="vehicle-stat-label">Queued/20</div>
+                </div>
+                <div class="vehicle-stat">
+                    <div class="vehicle-stat-value" id="circling-count" style="color: #ff8c00;">0</div>
+                    <div class="vehicle-stat-label">Circling</div>
+                </div>
+                <div class="vehicle-stat">
+                    <div class="vehicle-stat-value" id="stranded-count" style="color: #ff00ff;">0</div>
+                    <div class="vehicle-stat-label">Stranded</div>
                 </div>
             </div>
             
@@ -1134,6 +1342,9 @@ HTML_COMPLETE_TEMPLATE = '''
                 document.getElementById('active-vehicles').textContent = (networkState.vehicles || []).length;
                 document.getElementById('ev-count').textContent = networkState.vehicle_stats.ev_vehicles || 0;
                 document.getElementById('charging-count').textContent = networkState.vehicle_stats.vehicles_charging || 0;
+                document.getElementById('queued-count').textContent = networkState.vehicle_stats.vehicles_queued || 0;
+                document.getElementById('circling-count').textContent = networkState.vehicle_stats.vehicles_circling || 0;
+                document.getElementById('stranded-count').textContent = networkState.vehicle_stats.vehicles_stranded || 0;
                 document.getElementById('avg-speed').textContent = 
                     Math.round((networkState.vehicle_stats.avg_speed_mps || 0) * 3.6);
                 document.getElementById('energy-consumed').textContent = 
@@ -1142,7 +1353,8 @@ HTML_COMPLETE_TEMPLATE = '''
                     Math.round(networkState.vehicle_stats.total_wait_time || 0);
                 
                 document.getElementById('vehicle-count').textContent = (networkState.vehicles || []).length;
-                document.getElementById('charging-stations').textContent = networkState.vehicle_stats.vehicles_charging || 0;
+                document.getElementById('charging-stations').textContent = 
+                 `${networkState.vehicle_stats.vehicles_charging || 0}/${networkState.vehicle_stats.vehicles_queued || 0}`;
             }
             
             document.getElementById('total-load').textContent = Math.round(stats.total_load_mw);
@@ -1314,11 +1526,12 @@ HTML_COMPLETE_TEMPLATE = '''
             });
 
             // Badge background (shows when charging_count > 0)
+// In initializeEVStationLayer(), update the badge background layer:
             map.addLayer({
                 id: 'ev-stations-badge-bg',
                 type: 'circle',
                 source: 'ev-stations',
-                filter: ['>', ['get', 'charging_count'], 0],
+                filter: ['>', ['get', 'charging_count'], 0],  // Show badge when charging
                 paint: {
                     'circle-radius': [
                         'interpolate', ['linear'], ['zoom'],
@@ -1328,9 +1541,10 @@ HTML_COMPLETE_TEMPLATE = '''
                     ],
                     'circle-color': [
                         'case',
-                        ['>=', ['get', 'charging_count'], ['get', 'chargers']], '#ff0000',
-                        ['>=', ['get', 'charging_count'], ['*', ['get', 'chargers'], 0.8]], '#ffa500',
-                        '#00ff00'
+                        ['>=', ['get', 'charging_count'], 20], '#ff0000',  // Full - red
+                        ['>=', ['get', 'charging_count'], 15], '#ffa500',  // Almost full - orange
+                        ['>=', ['get', 'charging_count'], 10], '#ffff00',  // Half full - yellow
+                        '#00ff00'  // Available - green
                     ],
                     'circle-stroke-color': '#ffffff',
                     'circle-stroke-width': 2,
@@ -1370,16 +1584,24 @@ HTML_COMPLETE_TEMPLATE = '''
             function onEVClick(e) {
                 const props = e.features[0].properties;
                 
+                const chargingText = props.charging_count > 0 ? 
+                    `<span style="color: #00ffff">⚡ Charging: ${props.charging_count}/20</span>` : 
+                    '<span>⚡ Charging: 0/20</span>';
+                
+                const queuedText = props.queued_count > 0 ? 
+                    `<br><span style="color: #ffff00">⏳ Queued: ${props.queued_count}/20</span>` : '';
+                
                 new mapboxgl.Popup()
                     .setLngLat(e.lngLat)
                     .setHTML(`
                         <strong>${props.name}</strong><br>
-                        Chargers: ${props.chargers}<br>
-                        Charging: <strong>${props.charging_count}/${props.chargers}</strong><br>
-                        Substation: ${props.substation}<br>
                         Status: <span style="color: ${props.operational ? '#00ff88' : '#ff0000'}">
                             ${props.operational ? '✅ Online' : '❌ Offline'}
-                        </span>
+                        </span><br>
+                        ${chargingText}
+                        ${queuedText}<br>
+                        Capacity: ${props.chargers} chargers<br>
+                        Substation: ${props.substation}
                     `)
                     .addTo(map);
             }
@@ -1407,6 +1629,7 @@ HTML_COMPLETE_TEMPLATE = '''
         }
         
         // Render vehicles using GeoJSON layer (FIXED)
+// In renderVehicles() function - ensure NO filtering of charging vehicles
         function renderVehicles() {
             if (!networkState || !networkState.vehicles) {
                 if (map.getLayer('vehicles-layer')) {
@@ -1427,11 +1650,8 @@ HTML_COMPLETE_TEMPLATE = '''
                 map.setLayoutProperty('vehicles-layer', 'visibility', layers.vehicles ? 'visible' : 'none');
             }
             
-            // Convert vehicles to GeoJSON features
-            // Convert vehicles to GeoJSON features (hide charging vehicles)
-            const features = networkState.vehicles
-                .filter(vehicle => !vehicle.is_charging)  // Hide charging vehicles
-                .map(vehicle => ({
+            // Convert ALL vehicles to GeoJSON features - NO FILTERING!
+            const features = networkState.vehicles.map(vehicle => ({
                 type: 'Feature',
                 geometry: {
                     type: 'Point',
@@ -1443,13 +1663,19 @@ HTML_COMPLETE_TEMPLATE = '''
                     speed_kmh: vehicle.speed_kmh || 0,
                     is_ev: vehicle.is_ev || false,
                     is_charging: vehicle.is_charging || false,
+                    is_queued: vehicle.is_queued || false,
+                    is_circling: vehicle.is_circling || false,
+                    is_stranded: vehicle.is_stranded || false,
                     battery_percent: vehicle.battery_percent || 100,
-                    color: vehicle.is_charging ? '#00ffff' :  // Cyan for charging
-                           vehicle.battery_percent < 20 ? '#ff0000' :  // Red for critical
-                           vehicle.battery_percent < 30 ? '#ffa500' :  // Orange for low
-                           vehicle.is_ev ? '#00ff00' :  // Green for good battery
-                           vehicle.type === 'taxi' ? '#ffff00' :
-                           '#6464ff',
+                    color: vehicle.is_stranded ? '#ff00ff' :      // Magenta for stranded
+                        vehicle.is_charging ? '#00ffff' :      // Cyan for charging
+                        vehicle.is_queued ? '#ffff00' :        // Yellow for queued
+                        vehicle.is_circling ? '#ff8c00' :      // Dark orange for circling
+                        vehicle.battery_percent < 20 ? '#ff0000' :  // Red for critical
+                        vehicle.battery_percent < 30 ? '#ffa500' :  // Orange for low
+                        vehicle.is_ev ? '#00ff00' :            // Green for good battery
+                        vehicle.type === 'taxi' ? '#ffff00' :
+                        '#6464ff',
                     angle: vehicle.angle || 0,
                     edge: vehicle.edge || '',
                     distance_traveled: vehicle.distance_traveled || 0,
@@ -1469,69 +1695,71 @@ HTML_COMPLETE_TEMPLATE = '''
         }
         
         // Render EV stations using GeoJSON layer (FIXED - same as vehicles)
-        function renderEVStations() {
-            if (!networkState || !networkState.ev_stations) {
-                if (map.getLayer('ev-stations-layer')) {
-                    map.setLayoutProperty('ev-stations-layer', 'visibility', 'none');
-                }
-                return;
-            }
-            
-            // Initialize layer if needed
-            if (!evStationLayerInitialized && map.loaded()) {
-                initializeEVStationLayer();
-            }
-            
-            if (!map.getSource('ev-stations')) return;
-            
-            // Show/hide EV station layers based on toggle
-            ['ev-stations-layer','ev-stations-icon','ev-stations-badge-bg','ev-stations-badge-text'].forEach(id => {
-                if (map.getLayer(id)) {
-                    map.setLayoutProperty(id, 'visibility', layers.ev ? 'visible' : 'none');
-                }
-            });
-            
-            // Convert EV stations to GeoJSON features
-            const features = networkState.ev_stations.map(ev => {
-                // Count vehicles charging at this station
-                let chargingCount = 0;
-                if (networkState.vehicles) {
-                    chargingCount = networkState.vehicles.filter(v => 
-                        v.is_charging && v.assigned_station === ev.id
-                    ).length;
-                }
-                
-                // Base color: keep station icon consistent (blue when operational, gray when offline)
-                let color = ev.operational ? '#00aaff' : '#666';
-                
-                return {
-                    type: 'Feature',
-                    geometry: {
-                        type: 'Point',
-                        coordinates: [ev.lon, ev.lat]
-                    },
-                    properties: {
-                        id: ev.id,
-                        name: ev.name,
-                        chargers: ev.chargers,
-                        charging_count: chargingCount,
-                        operational: ev.operational,
-                        substation: ev.substation,
-                        color: color
-                    }
-                };
-            });
-            
-            // Update the source data
-            const source = map.getSource('ev-stations');
-            if (source) {
-                source.setData({
-                    type: 'FeatureCollection',
-                    features: features
-                });
-            }
+function renderEVStations() {
+    if (!networkState || !networkState.ev_stations) {
+        if (map.getLayer('ev-stations-layer')) {
+            map.setLayoutProperty('ev-stations-layer', 'visibility', 'none');
+        }
+        return;
+    }
+    
+    // Initialize layer if needed
+    if (!evStationLayerInitialized && map.loaded()) {
+        initializeEVStationLayer();
+    }
+    
+    if (!map.getSource('ev-stations')) return;
+    
+    // Show/hide EV station layers based on toggle
+    ['ev-stations-layer','ev-stations-icon','ev-stations-badge-bg','ev-stations-badge-text'].forEach(id => {
+        if (map.getLayer(id)) {
+            map.setLayoutProperty(id, 'visibility', layers.ev ? 'visible' : 'none');
+        }
+    });
+    
+    // Convert EV stations to GeoJSON features with accurate counts
+    const features = networkState.ev_stations.map(ev => {
+        // Use counts from backend (already calculated)
+        let chargingCount = ev.vehicles_charging || 0;
+        let queuedCount = ev.vehicles_queued || 0;
+        
+        // Fallback: count from vehicles if backend didn't provide
+        if (chargingCount === 0 && networkState.vehicles) {
+            chargingCount = networkState.vehicles.filter(v => 
+                v.is_charging && v.assigned_station === ev.id
+            ).length;
         }
         
+        let color = ev.operational ? '#00aaff' : '#666';
+        
+        return {
+            type: 'Feature',
+            geometry: {
+                type: 'Point',
+                coordinates: [ev.lon, ev.lat]
+            },
+            properties: {
+                id: ev.id,
+                name: ev.name,
+                chargers: ev.chargers,
+                charging_count: chargingCount,
+                queued_count: queuedCount,
+                operational: ev.operational,
+                substation: ev.substation,
+                color: color
+            }
+        };
+    });
+    
+    // Update the source data
+    const source = map.getSource('ev-stations');
+    if (source) {
+        source.setData({
+            type: 'FeatureCollection',
+            features: features
+        });
+    }
+}
         // Render network
         function renderNetwork() {
             if (!networkState) return;

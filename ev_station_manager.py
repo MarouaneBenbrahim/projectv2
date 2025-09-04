@@ -44,50 +44,52 @@ class EVStationManager:
         self._initialize_stations()
     
     def _initialize_stations(self):
-            """Initialize stations on valid SUMO edges using actual station names"""
+        """Initialize stations on valid SUMO edges using actual station names"""
+        
+        for ev_id, ev_station in self.integrated_system.ev_stations.items():
+            # Find nearest valid edge
+            edge = self._find_nearest_valid_edge(
+                ev_station['lat'], 
+                ev_station['lon']
+            )
             
-            for ev_id, ev_station in self.integrated_system.ev_stations.items():
-                # Find nearest valid edge
-                edge = self._find_nearest_valid_edge(
-                    ev_station['lat'], 
-                    ev_station['lon']
-                )
+            if edge:
+                # Create charging ports based on actual station capacity
+                ports = []
+                num_fast = min(2, ev_station['chargers'] // 4)  # 25% fast chargers max
                 
-                if edge:
-                    # Create charging ports based on actual station capacity
-                    ports = []
-                    num_fast = min(2, ev_station['chargers'] // 4)  # 25% fast chargers max
+                # Create 20 ports maximum per station
+                num_ports = min(20, ev_station['chargers'])
+                
+                for i in range(num_ports):
+                    # Mix of DC fast and Level 2
+                    if i < num_fast:
+                        power = 150  # DC fast charging
+                    else:
+                        power = 22   # Level 2
                     
-                    for i in range(ev_station['chargers']):
-                        # Mix of DC fast and Level 2
-                        if i < num_fast:
-                            power = 150  # DC fast charging
-                        else:
-                            power = 22   # Level 2
-                        
-                        ports.append(ChargingPort(
-                            port_id=f"{ev_id}_port_{i}",
-                            power_kw=power
-                        ))
-                    
-                    self.stations[ev_id] = {
-                        'id': ev_id,
-                        'name': ev_station['name'],  # Keep actual name
-                        'edge': edge,
-                        'lat': ev_station['lat'],
-                        'lon': ev_station['lon'],
-                        'ports': ports,
-                        'queue': [],
-                        'operational': ev_station['operational'],
-                        'substation': ev_station['substation'],
-                        'total_power_kw': sum(p.power_kw for p in ports),
-                        'current_load_kw': 0
-                    }
-                    
-                    self.charging_queues[ev_id] = []
-                    
-                    print(f"✅ Initialized {ev_station['name']} on edge {edge} with {len(ports)} ports")
-    
+                    ports.append(ChargingPort(
+                        port_id=f"{ev_id}_port_{i}",
+                        power_kw=power
+                    ))
+                
+                self.stations[ev_id] = {
+                    'id': ev_id,
+                    'name': ev_station['name'],
+                    'edge': edge,
+                    'lat': ev_station['lat'],
+                    'lon': ev_station['lon'],
+                    'ports': ports,
+                    'queue': [],
+                    'operational': ev_station['operational'],  # Get from integrated system
+                    'substation': ev_station['substation'],
+                    'total_power_kw': sum(p.power_kw for p in ports),
+                    'current_load_kw': 0
+                }
+                
+                self.charging_queues[ev_id] = []
+                
+                print(f"✅ Initialized {ev_station['name']} on edge {edge} with {len(ports)} ports (Max 20 charging, 20 queue)")
     def _find_nearest_valid_edge(self, lat, lon):
         """Find nearest edge that can be routed to"""
         
@@ -131,51 +133,54 @@ class EVStationManager:
             (station_id, edge_id, estimated_wait_minutes, distance_km)
         """
         
+        print(f"\n🔍 Finding charging station for {vehicle_id} (SOC: {current_soc:.1%})")
+        
         best_option = None
         min_total_time = float('inf')
+        stations_checked = []
         
         for station_id, station in self.stations.items():
-            if not station['operational']:
+            # First check if station has power from integrated system
+            ev_station = self.integrated_system.ev_stations.get(station_id)
+            if not ev_station or not ev_station['operational']:
+                stations_checked.append(f"{station['name']} (NO POWER)")
                 continue
             
-            # Skip if station affected by blackout
-            if not self._check_power_available(station):
+            # Double check substation
+            substation = self.integrated_system.substations.get(station['substation'])
+            if not substation or not substation['operational']:
+                stations_checked.append(f"{station['name']} (Substation DOWN)")
                 continue
             
-            # Calculate travel time
+            # CHECK CAPACITY - MAX 20 CHARGING, 20 IN QUEUE
+            current_charging = len([p for p in station['ports'] if p.occupied_by is not None])
+            current_queue = len(station.get('queue', []))
+            
+            # Skip if station is completely full
+            if current_charging >= 20 and current_queue >= 20:
+                stations_checked.append(f"{station['name']} (FULL: {current_charging}/20 charging, {current_queue}/20 queue)")
+                continue
+            
+            # Calculate travel distance
             try:
-                route = self._find_shortest_route(current_edge, station['edge'])
-                if not route:
+                # Simple distance for now
+                if not current_edge or current_edge.startswith(':'):
                     continue
-                
-                distance = self._calculate_route_distance(route)
-                travel_time_min = (distance / 30) * 60  # Assume 30 km/h avg
+                    
+                distance = 1.0  # Simplified - 1km default
+                travel_time_min = 2  # 2 minutes to get there
                 
                 # Calculate wait time
-                queue_length = len(station['queue'])
-                available_ports = sum(
-                    1 for p in station['ports'] 
-                    if p.occupied_by is None
-                )
-                
-                if available_ports > 0:
+                if current_charging < 20:
                     wait_time_min = 0
+                    stations_checked.append(f"{station['name']} (AVAILABLE: {current_charging}/20 charging)")
                 else:
-                    # Estimate based on queue and charging times
-                    avg_charge_time = 20  # 20 minutes average
-                    wait_time_min = (queue_length * avg_charge_time) / len(station['ports'])
+                    position_in_queue = current_queue + 1
+                    wait_time_min = (position_in_queue * 5) / 10  # Estimate
+                    stations_checked.append(f"{station['name']} (QUEUE: {current_queue}/20)")
                 
-                # Add charging time estimate
-                charge_needed = (0.8 - current_soc) * 75  # kWh needed
-                fastest_port = max(station['ports'], key=lambda p: p.power_kw)
-                charge_time_min = (charge_needed / fastest_port.power_kw) * 60
-                
-                # Total time = travel + wait + charge
-                total_time = travel_time_min + wait_time_min + charge_time_min
-                
-                # Prioritize if emergency and has DC fast charging
-                if is_emergency and any(p.power_kw >= 150 for p in station['ports']):
-                    total_time *= 0.7  # Prefer fast chargers
+                # Total time
+                total_time = travel_time_min + wait_time_min + 5  # 5 min charge time
                 
                 if total_time < min_total_time:
                     min_total_time = total_time
@@ -187,12 +192,19 @@ class EVStationManager:
                     )
                     
             except Exception as e:
+                stations_checked.append(f"{station['name']} (ERROR: {e})")
                 continue
+        
+        print(f"   Checked stations: {', '.join(stations_checked)}")
         
         if best_option:
             station_id = best_option[0]
+            station = self.stations[station_id]
             
-            # Add to queue if needed
+            # Add to queue/reservation
+            if station_id not in self.charging_queues:
+                self.charging_queues[station_id] = []
+                
             request = ChargingRequest(
                 vehicle_id=vehicle_id,
                 battery_soc=current_soc,
@@ -202,23 +214,12 @@ class EVStationManager:
             
             heapq.heappush(self.charging_queues[station_id], request)
             self.vehicle_reservations[vehicle_id] = station_id
+            
+            print(f"   ✅ {vehicle_id} → {station['name']} (Wait: {best_option[2]:.0f} min)")
+        else:
+            print(f"   ❌ {vehicle_id} NO AVAILABLE STATIONS!")
         
         return best_option
-    
-    def _find_shortest_route(self, from_edge, to_edge):
-        """Use SUMO's routing to find shortest path"""
-        
-        try:
-            import traci
-            if traci.isLoaded():
-                route = traci.simulation.findRoute(from_edge, to_edge)
-                if route and route.edges:
-                    return route.edges
-        except:
-            pass
-        
-        # Fallback to simple route
-        return [from_edge, to_edge]
     
     def _calculate_route_distance(self, route):
         """Calculate route distance in km"""
@@ -237,8 +238,16 @@ class EVStationManager:
         """Check if station's substation is operational"""
         
         substation_name = station['substation']
+        
+        # Check in the integrated system's substations
         if substation_name in self.integrated_system.substations:
-            return self.integrated_system.substations[substation_name]['operational']
+            is_operational = self.integrated_system.substations[substation_name]['operational']
+            if not is_operational:
+                print(f"      {substation_name} substation is DOWN")
+            return is_operational
+        
+        # If substation not found, assume it's operational
+        print(f"      Warning: Substation {substation_name} not found, assuming operational")
         return True
     def handle_blackout(self, substation_name):
         """Handle substation blackout - mark stations as offline"""
@@ -249,16 +258,42 @@ class EVStationManager:
                 station['operational'] = False
                 affected_stations.append(station['name'])
                 
+                # Update in integrated system too
+                if station_id in self.integrated_system.ev_stations:
+                    self.integrated_system.ev_stations[station_id]['operational'] = False
+                
                 # Clear any charging vehicles
                 for port in station['ports']:
                     if port.occupied_by:
                         # Force stop charging
                         self.finish_charging(port.occupied_by)
+                
+                # Clear queue
+                if 'queue' in station:
+                    station['queue'].clear()
         
         if affected_stations:
             print(f"⚡ BLACKOUT: {', '.join(affected_stations)} offline!")
         
         return affected_stations
+
+    def restore_power(self, substation_name):
+        """Restore power to stations"""
+        
+        restored_stations = []
+        for station_id, station in self.stations.items():
+            if station['substation'] == substation_name:
+                station['operational'] = True
+                restored_stations.append(station['name'])
+                
+                # Update in integrated system too
+                if station_id in self.integrated_system.ev_stations:
+                    self.integrated_system.ev_stations[station_id]['operational'] = True
+        
+        if restored_stations:
+            print(f"✅ POWER RESTORED: {', '.join(restored_stations)} back online!")
+        
+        return restored_stations
     
     def restore_power(self, substation_name):
         """Restore power to stations"""
