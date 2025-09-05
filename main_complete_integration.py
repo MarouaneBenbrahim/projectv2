@@ -42,7 +42,7 @@ sumo_manager = ManhattanSUMOManager(integrated_system)
 system_state = {
     'running': True,
     'sumo_running': False,
-    'simulation_speed': 1.0,
+    'simulation_speed': 10.0,
     'current_time': 0,
     'scenario': SimulationScenario.MIDDAY
 }
@@ -454,10 +454,14 @@ def fail_substation(substation):
     impact = integrated_system.simulate_substation_failure(substation)
     power_grid.trigger_failure('substation', substation)
     
+        # Update SUMO traffic lights if running
     # Update SUMO traffic lights if running
     if system_state['sumo_running'] and sumo_manager.running:
-        # Update traffic lights - they go to YELLOW during blackout, not RED
+        # Update traffic lights - they go to RED during blackout
         sumo_manager.update_traffic_lights()
+        
+        # Handle blackout traffic behavior (slow down vehicles)
+        sumo_manager.handle_blackout_traffic([substation])
         
         # Handle blackout for traffic lights specifically
         if hasattr(sumo_manager, 'handle_blackout_traffic_lights'):
@@ -498,6 +502,8 @@ def restore_substation(substation):
         # Update SUMO traffic lights if running
         if system_state['sumo_running'] and sumo_manager.running:
             sumo_manager.update_traffic_lights()
+            # Restore normal traffic speeds
+            sumo_manager.restore_normal_traffic([substation])
             
             # RESTORE EV STATION STATUS
             for ev_id, ev_station in integrated_system.ev_stations.items():

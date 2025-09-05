@@ -1,0 +1,11 @@
+Warning: At actuated tlLogic '42421985', linkIndex 3,4,5,6 has no controlling detector.
+Warning: At actuated tlLogic '42430745', linkIndex 7,8 has no controlling detector.
+Warning: At actuated tlLogic '42440566', linkIndex 8,9,10 has no controlling detector.
+Warning: At actuated tlLogic 'cluster_12153915836_2348991703_9140954071', linkIndex 4,5 has no controlling detector.
+Warning: At actuated tlLogic 'joinedS_248708582_42455929', linkIndex 6,7,9,10,14,15,16,18,19 has no controlling detector.
+Warning: At actuated tlLogic 'joinedS_42430673_9019680388', linkIndex 3,10,11 has no controlling detector.
+Warning: At actuated tlLogic 'joinedS_42443615_6680686184', linkIndex 0,1 has no controlling detector.
+Warning: At actuated tlLogic 'joinedS_4491359481_9807801426', linkIndex 0,1 has no controlling detector.
+Warning: At actuated tlLogic 'joinedS_9915469771_cluster_6173564360_9170816532_9909932988_9909932989_#1more', linkIndex 5 has no controlling detector.
+Error: tcpip::Socket::recvAndCheck @ recv: peer shutdown
+Quitting (on error).

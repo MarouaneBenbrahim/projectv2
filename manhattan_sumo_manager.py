@@ -1,6 +1,7 @@
 """
 Manhattan SUMO Manager - World Class Vehicle Simulation
 COMPLETE VERSION with all coordinate fixes and route validation
+FIXED: Stranded vehicles stop properly and circling routes always work
 """
 
 import os
@@ -15,6 +16,7 @@ import subprocess
 import time
 from ev_battery_model import EVBatteryModel
 from ev_station_manager import EVStationManager
+
 # Check if SUMO is available
 try:
     import traci
@@ -60,6 +62,56 @@ class VehicleConfig:
 class ManhattanSUMOManager:
     """Professional SUMO integration for Manhattan traffic"""
     
+    def _calculate_straight_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Calculate straight-line distance between two points (in degrees, for comparison)"""
+        return ((lat1 - lat2) ** 2 + (lon1 - lon2) ** 2) ** 0.5
+    
+    def _find_nearest_charging_station(self, vehicle_id: str, current_edge: str) -> Optional[str]:
+        """Find the nearest operational charging station with available space"""
+        
+        import traci
+        
+        if not self.station_manager:
+            return None
+        
+        # Get vehicle position
+        try:
+            x, y = traci.vehicle.getPosition(vehicle_id)
+            vehicle_lon, vehicle_lat = traci.simulation.convertGeo(x, y)
+        except:
+            return None
+        
+        best_station = None
+        min_distance = float('inf')
+        
+        # Check ALL stations and find the nearest one
+        for station_id, station in self.station_manager.stations.items():
+            # Check if station is operational
+            if not station['operational']:
+                continue
+            
+            # Check if station has space (strict 20 limit)
+            occupied = len(station['vehicles_charging'])
+            if occupied >= 20:
+                continue
+            
+            # Calculate distance to station
+            station_info = self.integrated_system.ev_stations.get(station_id)
+            if not station_info:
+                continue
+            
+            # Calculate straight-line distance
+            dist = self._calculate_straight_distance(
+                vehicle_lat, vehicle_lon,
+                station_info['lat'], station_info['lon']
+            )
+            
+            if dist < min_distance:
+                min_distance = dist
+                best_station = station_id
+        
+        return best_station
+
     def __init__(self, integrated_system):
         self.integrated_system = integrated_system
         self.running = False
@@ -285,7 +337,9 @@ class ManhattanSUMOManager:
             "--no-warnings",
             "--no-step-log",
             "--duration-log.statistics",
-            "--device.emissions.probability", "1.0"
+            "--device.emissions.probability", "1.0",
+            "--time-to-teleport", "-1",  # ADD THIS - Disable teleporting
+            "--ignore-route-errors"      # ADD THIS - Don't remove on route errors  # ADD THIS - Keep original routes
         ]
         
         # Collect additional files
@@ -372,15 +426,17 @@ class ManhattanSUMOManager:
                 }
     
     def spawn_vehicles(self, count: int = 10, ev_percentage: float = 0.3) -> int:
-        """Spawn vehicles with validated routes ensuring they start on actual roads"""
+        """Spawn vehicles - with proper traffic light respect"""
         
         if not self.running:
             return 0
         
         import traci
         spawned = 0
+        attempts = 0
+        max_attempts = count * 10
         
-        # Get ACTUAL edges from the live SUMO network (not from stored list)
+        # Get ALL valid edges from SUMO
         all_edges = traci.edge.getIDList()
         valid_edges = [e for e in all_edges if not e.startswith(':') and traci.edge.getLaneNumber(e) > 0]
         
@@ -390,43 +446,51 @@ class ManhattanSUMOManager:
         
         print(f"Spawning {count} vehicles using {len(valid_edges)} valid edges...")
         
-        for i in range(count):
-            vehicle_id = f"veh_{self.stats['total_vehicles'] + i}"
+        while spawned < count and attempts < max_attempts:
+            attempts += 1
             
-            # 80% EVs for testing
-            is_ev = random.random() < 0.8
+            # Generate unique vehicle ID
+            vehicle_id = f"veh_{self.stats['total_vehicles'] + spawned}_{attempts}"
+            
+            # Determine if EV (70% for testing)
+            is_ev = random.random() < 0.7
             
             if is_ev:
                 vtype = "ev_sedan" if random.random() < 0.6 else "ev_suv"
-                # CALIBRATED BATTERY: 30-40% starting charge
-                # This ensures they can reach any station from anywhere with 8% left
-                initial_soc = random.uniform(0.20, 0.24)  # 30-40% battery
+                # Start with 15-25% battery for more realistic testing
+                initial_soc = random.uniform(0.15, 0.25)
             else:
                 vtype = random.choice(["car", "taxi"])
                 initial_soc = 1.0
             
-            # Rest of the spawn code stays the same...
-            # Try multiple times to find a valid route
-            spawn_success = False
-            for attempt in range(10):
+            route_found = False
+            edge_attempts = 0
+            
+            while not route_found and edge_attempts < 20:
+                edge_attempts += 1
+                
                 try:
-                    # Pick random edges from ACTUAL network edges
+                    # Pick random edges
                     origin = random.choice(valid_edges)
                     destination = random.choice(valid_edges)
                     
-                    # Make sure they're different
-                    while destination == origin and len(valid_edges) > 1:
-                        destination = random.choice(valid_edges)
+                    # Ensure different
+                    if origin == destination:
+                        if len(valid_edges) > 1:
+                            destination = random.choice([e for e in valid_edges if e != origin])
+                        else:
+                            continue
                     
-                    # Use SUMO's built-in routing
+                    # Try to find route
                     route_result = traci.simulation.findRoute(origin, destination)
                     
                     if route_result and route_result.edges and len(route_result.edges) > 0:
-                        # Create and add the route
-                        route_id = f"route_{vehicle_id}_{attempt}"
+                        route_id = f"route_{vehicle_id}"
+                        
+                        # Add route
                         traci.route.add(route_id, route_result.edges)
                         
-                        # Add the vehicle
+                        # Add vehicle
                         traci.vehicle.add(
                             vehicle_id,
                             route_id,
@@ -434,26 +498,24 @@ class ManhattanSUMOManager:
                             depart="now"
                         )
                         
-                        # EXTREME SPEED FOR TESTING
-                        traci.vehicle.setMaxSpeed(vehicle_id, 500)  # 500 m/s = 1800 km/h
-                        traci.vehicle.setSpeedMode(vehicle_id, 0)  # Ignore ALL safety
-                        traci.vehicle.setSpeed(vehicle_id, 200)  # Start at 200 m/s = 720 km/h
-                        traci.vehicle.setAccel(vehicle_id, 50)  # Super acceleration
-                        traci.vehicle.setDecel(vehicle_id, 50)  # Super braking
-                        traci.vehicle.setMinGap(vehicle_id, 0.5)  # Very close following
-                        traci.vehicle.setTau(vehicle_id, 0.1)  # Minimal reaction time
-                        traci.vehicle.setSpeedFactor(vehicle_id, 10)  # 10x normal speed
+                        # SET REALISTIC SPEEDS AND TRAFFIC LIGHT RESPECT
+                        traci.vehicle.setMaxSpeed(vehicle_id, 20)  # 20 m/s = 72 km/h max
+                        traci.vehicle.setSpeed(vehicle_id, -1)  # Let SUMO control speed
+                        traci.vehicle.setSpeedMode(vehicle_id, 31)  # This makes them respect traffic lights!
+                        traci.vehicle.setAccel(vehicle_id, 2.6)  # Normal acceleration
+                        traci.vehicle.setDecel(vehicle_id, 4.5)  # Normal braking
+                        traci.vehicle.setMinGap(vehicle_id, 2.5)  # Safe following distance
+                        traci.vehicle.setImpatience(vehicle_id, 0)  # Never run red lights
+                        traci.vehicle.setParameter(vehicle_id, "junctionModel.ignoreIDs", "")  # Don't ignore junctions
                         
                         # Set color based on battery
                         if is_ev:
-                            if initial_soc < 0.35:
-                                traci.vehicle.setColor(vehicle_id, (255, 165, 0, 255))  # Orange for 30-35%
+                            if initial_soc < 0.25:
+                                traci.vehicle.setColor(vehicle_id, (255, 0, 0, 255))  # Red for needs charging
                             else:
-                                traci.vehicle.setColor(vehicle_id, (0, 255, 0, 255))  # Green for 35-40%
-                        elif vtype == "taxi":
-                            traci.vehicle.setColor(vehicle_id, (255, 255, 0, 255))  # Yellow
+                                traci.vehicle.setColor(vehicle_id, (0, 255, 0, 255))  # Green when charged
                         else:
-                            traci.vehicle.setColor(vehicle_id, (100, 100, 255, 255))  # Blue
+                            traci.vehicle.setColor(vehicle_id, (255, 255, 0, 255))  # Yellow for gas vehicles
                         
                         # Set battery for EVs
                         if is_ev:
@@ -462,7 +524,7 @@ class ManhattanSUMOManager:
                             traci.vehicle.setParameter(vehicle_id, "device.battery.actualBatteryCapacity", str(battery_capacity * initial_soc))
                             traci.vehicle.setParameter(vehicle_id, "has.battery.device", "true")
                         
-                        # Store vehicle data
+                        # Create vehicle object
                         vtype_enum = VehicleType.EV_SEDAN if vtype == "ev_sedan" else \
                                     VehicleType.EV_SUV if vtype == "ev_suv" else \
                                     VehicleType.TAXI if vtype == "taxi" else \
@@ -483,22 +545,62 @@ class ManhattanSUMOManager:
                         )
                         
                         spawned += 1
-                        spawn_success = True
+                        route_found = True
                         
                         if is_ev:
                             self.stats['ev_vehicles'] += 1
+                        
+                        if spawned % 5 == 0:
+                            print(f"  Spawned {spawned}/{count} vehicles...")
                         
                         break
                         
                 except Exception as e:
                     continue
             
-            if not spawn_success:
-                print(f"  ⚠️ Failed to spawn {vehicle_id} after 10 attempts")
+            # Fallback if route creation failed
+            if not route_found and len(valid_edges) >= 2:
+                try:
+                    vehicle_id = f"veh_fallback_{self.stats['total_vehicles'] + spawned}_{attempts}"
+                    route_id = f"route_fallback_{vehicle_id}"
+                    
+                    traci.route.add(route_id, [valid_edges[0], valid_edges[1]])
+                    traci.vehicle.add(
+                        vehicle_id,
+                        route_id,
+                        typeID="car",
+                        depart="now"
+                    )
+                    
+                    # Apply traffic light respect settings
+                    traci.vehicle.setMaxSpeed(vehicle_id, 20)
+                    traci.vehicle.setSpeedMode(vehicle_id, 31)
+                    traci.vehicle.setImpatience(vehicle_id, 0)
+                    
+                    self.vehicles[vehicle_id] = Vehicle(
+                        vehicle_id,
+                        VehicleConfig(
+                            id=vehicle_id,
+                            vtype=VehicleType.CAR,
+                            origin=valid_edges[0],
+                            destination=valid_edges[1],
+                            is_ev=False,
+                            battery_capacity_kwh=0,
+                            current_soc=1.0,
+                            route=[valid_edges[0], valid_edges[1]]
+                        )
+                    )
+                    
+                    spawned += 1
+                    
+                except:
+                    pass
         
         self.stats['total_vehicles'] += spawned
-        print(f"✅ Successfully spawned {spawned}/{count} vehicles (80% EVs with 30-40% battery)")
-        print(f"⚠️  Battery calibrated: Can reach farthest station with 8% remaining")
+        
+        print(f"✅ Spawned {spawned} vehicles")
+        print(f"  EVs: {sum(1 for v in self.vehicles.values() if v.config.is_ev)}")
+        print(f"  Gas: {sum(1 for v in self.vehicles.values() if not v.config.is_ev)}")
         
         return spawned
     def get_vehicle_positions_for_visualization(self) -> List[Dict]:
@@ -570,24 +672,126 @@ class ManhattanSUMOManager:
             return []
     
     def _get_vehicle_color(self, vehicle: 'Vehicle') -> str:
-        """Get vehicle color for visualization"""
+        """Get vehicle color based on type and state"""
         
-        if vehicle.is_charging:
-            return '#ffa500'  # Orange for charging
-        elif vehicle.config.is_ev:
-            if vehicle.config.current_soc < 0.2:
-                return '#ff6b6b'  # Red for low battery
+        # Check if vehicle is stranded (emergency)
+        if hasattr(vehicle, 'is_stranded') and vehicle.is_stranded:
+            return '#ff00ff'  # Purple for emergency (will flash in handling)
+        
+        # EV colors based on battery
+        if vehicle.config.is_ev:
+            if vehicle.config.current_soc <= 0.02:  # 2% or less - emergency
+                return '#ff00ff'  # Purple (will flash)
+            elif vehicle.config.current_soc < 0.25:  # Needs charging
+                return '#ff0000'  # Red
+            elif hasattr(vehicle, 'is_charging') and vehicle.is_charging:
+                return '#00ffff'  # Cyan when charging
             else:
-                return '#00ff00'  # Green for EV
-        elif vehicle.config.vtype == VehicleType.TAXI:
-            return '#ffff00'  # Yellow for taxi
-        elif vehicle.config.vtype == VehicleType.BUS:
-            return '#4169e1'  # Blue for bus
+                return '#00ff00'  # Green when charged/normal
+        
+        # Non-EV vehicles - all yellow
         else:
-            return '#6464ff'  # Default blue for gas vehicles
+            return '#ffff00'  # Yellow for all gas vehicles
     
+
+    
+    def handle_blackout_traffic_lights(self, affected_substations):
+        """Handle traffic lights during blackout - set to flashing yellow or off"""
+        
+        if not self.running:
+            return
+        
+        import traci
+        
+        affected_count = 0
+        
+        for tl_id in traci.trafficlight.getIDList():
+            if tl_id in self.tl_sumo_to_power:
+                power_tl_id = self.tl_sumo_to_power[tl_id]
+                if power_tl_id in self.integrated_system.traffic_lights:
+                    power_tl = self.integrated_system.traffic_lights[power_tl_id]
+                    
+                    # Check if this light's substation is affected
+                    if power_tl['substation'] in affected_substations:
+                        # Set to yellow (caution) - vehicles can proceed carefully
+                        current_state = traci.trafficlight.getRedYellowGreenState(tl_id)
+                        yellow_state = 'y' * len(current_state)
+                        traci.trafficlight.setRedYellowGreenState(tl_id, yellow_state)
+                        affected_count += 1
+        
+        if affected_count > 0:
+            print(f"🚦 Set {affected_count} traffic lights to YELLOW (blackout mode)")
+    
+    def force_all_lights_red(self):
+        """Force all traffic lights to red (for testing)"""
+        if not self.running:
+            return
+        
+        import traci
+        for tl_id in traci.trafficlight.getIDList():
+            try:
+                state = traci.trafficlight.getRedYellowGreenState(tl_id)
+                red_state = 'r' * len(state)
+                traci.trafficlight.setRedYellowGreenState(tl_id, red_state)
+            except:
+                pass
+        print("⚠️ All traffic lights set to RED")
+    
+    def step(self):
+        """Advance simulation one step - WITH VEHICLE PRESERVATION"""
+        
+        if not self.running:
+            return
+        
+        try:
+            import traci
+            
+            # CRITICAL: Prevent vehicle removal
+            # Get list of vehicles that might be removed
+            arrived_vehicles = traci.simulation.getArrivedIDList()
+            for veh_id in arrived_vehicles:
+                if veh_id in self.vehicles:
+                    vehicle = self.vehicles[veh_id]
+                    if vehicle.config.is_ev and vehicle.config.current_soc < 0.80:
+                        # EV still needs charging - don't let it disappear!
+                        # Re-add the vehicle immediately
+                        all_edges = [e for e in traci.edge.getIDList() if not e.startswith(':')]
+                        if all_edges:
+                            origin = random.choice(all_edges)
+                            dest = random.choice(all_edges)
+                            
+                            try:
+                                # Create new route
+                                route_id = f"rescue_route_{veh_id}"
+                                traci.route.add(route_id, [origin, dest])
+                                
+                                # Re-add vehicle
+                                traci.vehicle.add(
+                                    veh_id,
+                                    route_id,
+                                    typeID="ev_sedan",
+                                    depart="now"
+                                )
+                                
+                                # Restore vehicle state
+                                traci.vehicle.setColor(veh_id, (255, 0, 0, 255))
+                                print(f"🛟 RESCUED {veh_id} from deletion!")
+                            except:
+                                pass
+            
+            # Normal simulation step
+            traci.simulationStep()
+            
+            # Update everything
+            self.update_traffic_lights()
+            self._update_vehicles()
+            self._handle_ev_charging()
+            self._update_statistics()
+            
+        except Exception as e:
+            print(f"Step error: {e}")
     def update_traffic_lights(self):
-        """Sync traffic lights from power grid to SUMO - FIXED for blackouts"""
+        """Sync traffic lights from power grid to SUMO - WITH BLACKOUT HANDLING"""
         
         if not self.running:
             return
@@ -613,26 +817,19 @@ class ManhattanSUMOManager:
                 # Set traffic light state based on power status
                 if power_tl:
                     if not power_tl['powered']:
-                        # NO POWER = FLASHING YELLOW (vehicles proceed with caution)
-                        # Or OFF state - vehicles treat as uncontrolled intersection
-                        
-                        # Option 1: All yellow (caution mode)
-                        yellow_state = 'y' * state_length
-                        traci.trafficlight.setRedYellowGreenState(tl_id, yellow_state)
-                        
-                        # Option 2: Turn off traffic light program (vehicles use priority rules)
-                        # traci.trafficlight.setProgram(tl_id, "off")
+                        # BLACKOUT - Set to all red (flashing effect handled by vehicles)
+                        red_state = 'r' * state_length
+                        traci.trafficlight.setRedYellowGreenState(tl_id, red_state)
                         
                     else:
                         # Normal operation - set based on power grid phase
                         if power_tl['phase'] == 'green':
-                            # Create green phase pattern
+                            # Green phase pattern
                             if state_length == 4:
                                 new_state = 'GGrr'  # Green N-S, Red E-W
                             elif state_length == 8:
                                 new_state = 'GGGGrrrr'  # Green main direction
                             else:
-                                # General pattern: half green, half red
                                 half = state_length // 2
                                 new_state = 'G' * half + 'r' * (state_length - half)
                             traci.trafficlight.setRedYellowGreenState(tl_id, new_state)
@@ -664,16 +861,69 @@ class ManhattanSUMOManager:
                     
             except Exception as e:
                 # Continue with other lights if one fails
-                pass
-    def handle_blackout_traffic_lights(self, affected_substations):
-        """Handle traffic lights during blackout - set to flashing yellow or off"""
+                pass    
+    def handle_blackout_traffic(self, affected_substations):
+        """Handle traffic behavior during blackout - vehicles slow down and treat lights as stop signs"""
         
         if not self.running:
             return
         
         import traci
         
-        affected_count = 0
+        affected_lights = []
+        
+        # Find all affected traffic lights
+        for tl_id in traci.trafficlight.getIDList():
+            if tl_id in self.tl_sumo_to_power:
+                power_tl_id = self.tl_sumo_to_power[tl_id]
+                if power_tl_id in self.integrated_system.traffic_lights:
+                    power_tl = self.integrated_system.traffic_lights[power_tl_id]
+                    
+                    if power_tl['substation'] in affected_substations:
+                        affected_lights.append(tl_id)
+        
+        if affected_lights:
+            print(f"🚦 BLACKOUT: {len(affected_lights)} traffic lights affected - vehicles slowing down")
+            
+            # Slow down all vehicles in the network during blackout
+            for veh_id in traci.vehicle.getIDList():
+                try:
+                    # Get current max speed
+                    current_max_speed = traci.vehicle.getMaxSpeed(veh_id)
+                    
+                    # Store original speed if not already stored
+                    if veh_id not in self.vehicles_blackout_speeds:
+                        self.vehicles_blackout_speeds[veh_id] = current_max_speed
+                    
+                    # Reduce to 1/5 of normal speed (5x slower)
+                    blackout_speed = current_max_speed / 5
+                    traci.vehicle.setMaxSpeed(veh_id, blackout_speed)
+                    
+                    # Also reduce acceleration/deceleration for more cautious driving
+                    traci.vehicle.setAccel(veh_id, 1.0)  # Slow acceleration
+                    traci.vehicle.setDecel(veh_id, 2.0)  # Gentle braking
+                    
+                    # Increase following distance for safety
+                    traci.vehicle.setMinGap(veh_id, 5.0)  # 5 meters minimum gap
+                    
+                    # Set speed mode to be more cautious
+                    traci.vehicle.setSpeedMode(veh_id, 25)  # Regard safe speed
+                    
+                except:
+                    pass
+        
+        return affected_lights 
+    def restore_normal_traffic(self, restored_substations):
+        """Restore normal traffic speeds after blackout ends"""
+        
+        if not self.running:
+            return
+        
+        import traci
+        
+        # Check which lights are restored
+        restored_lights = []
+        still_affected = False
         
         for tl_id in traci.trafficlight.getIDList():
             if tl_id in self.tl_sumo_to_power:
@@ -681,52 +931,34 @@ class ManhattanSUMOManager:
                 if power_tl_id in self.integrated_system.traffic_lights:
                     power_tl = self.integrated_system.traffic_lights[power_tl_id]
                     
-                    # Check if this light's substation is affected
-                    if power_tl['substation'] in affected_substations:
-                        # Set to yellow (caution) - vehicles can proceed carefully
-                        current_state = traci.trafficlight.getRedYellowGreenState(tl_id)
-                        yellow_state = 'y' * len(current_state)
-                        traci.trafficlight.setRedYellowGreenState(tl_id, yellow_state)
-                        affected_count += 1
+                    if power_tl['substation'] in restored_substations:
+                        restored_lights.append(tl_id)
+                    elif not power_tl['powered']:
+                        still_affected = True
         
-        if affected_count > 0:
-            print(f"🚦 Set {affected_count} traffic lights to YELLOW (blackout mode)")
-    def force_all_lights_red(self):
-        """Force all traffic lights to red (for testing)"""
-        if not self.running:
-            return
-        
-        import traci
-        for tl_id in traci.trafficlight.getIDList():
-            try:
-                state = traci.trafficlight.getRedYellowGreenState(tl_id)
-                red_state = 'r' * len(state)
-                traci.trafficlight.setRedYellowGreenState(tl_id, red_state)
-            except:
-                pass
-        print("⚠️ All traffic lights set to RED")        
-    
-    def step(self):
-        """Advance simulation one step"""
-        
-        if not self.running:
-            return
-        
-        try:
-            import traci
-            traci.simulationStep()
+        # If no more blackouts, restore normal speeds
+        if not still_affected:
+            print(f"✅ Power restored - vehicles resuming normal speeds")
             
-            # These are the ACTUAL methods in your code
-            self.update_traffic_lights()  # This exists
-            self._update_vehicles()  # This exists  
-            self._handle_ev_charging()  # This exists
-            self._update_statistics()  # This exists around line 1752
-            
-        except Exception as e:
-            print(f"Simulation step error: {e}")
-            import traceback
-            traceback.print_exc()
-
+            for veh_id in traci.vehicle.getIDList():
+                try:
+                    # Restore original max speed if we have it
+                    if veh_id in self.vehicles_blackout_speeds:
+                        original_speed = self.vehicles_blackout_speeds[veh_id]
+                        traci.vehicle.setMaxSpeed(veh_id, original_speed)
+                        del self.vehicles_blackout_speeds[veh_id]
+                    else:
+                        # Default restoration
+                        traci.vehicle.setMaxSpeed(veh_id, 200)  # Default high speed
+                    
+                    # Restore normal driving parameters
+                    traci.vehicle.setMaxSpeed(veh_id, 20)  # Normal city speed
+                    traci.vehicle.setAccel(veh_id, 2.6)  # Normal acceleration  
+                    traci.vehicle.setDecel(veh_id, 4.5)  # Normal braking
+                    traci.vehicle.setSpeedMode(veh_id, 0)  # Aggressive mode
+                    
+                except:
+                    pass                   
     def _update_statistics(self):
         """Update simulation statistics"""
         
@@ -760,10 +992,21 @@ class ManhattanSUMOManager:
         
         except Exception as e:
             pass  # Silent fail for stats
+    
     def _update_vehicles(self):
-        """Update vehicle states with realistic battery drain"""
+        """Update vehicle states with STRICT traffic light respect and blackout handling"""
+        
+        import traci
+        import time
         
         vehicle_ids = traci.vehicle.getIDList()
+        
+        # Check for blackout conditions
+        blackout_active = False
+        for substation in self.integrated_system.substations.values():
+            if not substation['operational']:
+                blackout_active = True
+                break
         
         for veh_id in vehicle_ids:
             if veh_id in self.vehicles:
@@ -775,85 +1018,145 @@ class ManhattanSUMOManager:
                     speed = traci.vehicle.getSpeed(veh_id)
                     vehicle.speed = speed
                     
-                    # FORCE EXTREME SPEED if not charging
-                    if not vehicle.is_charging:
-                        if speed < 150:  # If going slower than 150 m/s
-                            traci.vehicle.setSpeed(veh_id, 200)  # Force 200 m/s
-                            traci.vehicle.setSpeedMode(veh_id, 0)  # Ignore all safety
-                            traci.vehicle.setAccel(veh_id, 50)  # Super acceleration
+                    # Check if vehicle is stranded first
+                    if hasattr(vehicle, 'is_stranded') and vehicle.is_stranded:
+                        traci.vehicle.setSpeed(veh_id, 0)
+                        continue
+                    
+                    # STRICT TRAFFIC LIGHT ENFORCEMENT
+                    stopped_at_light = False
+                    
+                    # Method 1: Check vehicle's lane and traffic light state
+                    try:
+                        lane_id = traci.vehicle.getLaneID(veh_id)
+                        if lane_id and not lane_id.startswith(':'):
+                            # Get traffic lights controlling this lane
+                            controlled_links = traci.lane.getLinks(lane_id)
+                            
+                            for link in controlled_links:
+                                if len(link) > 7:  # Has traffic light info
+                                    tl_state = link[6]  # Traffic light state
+                                    
+                                    # Get distance to stop line
+                                    lane_length = traci.lane.getLength(lane_id)
+                                    lane_pos = traci.vehicle.getLanePosition(veh_id)
+                                    distance_to_end = lane_length - lane_pos
+                                    
+                                    if distance_to_end < 30:  # Within 30 meters of intersection
+                                        if tl_state in ['r', 'R']:
+                                            # RED LIGHT - FORCE STOP
+                                            traci.vehicle.setSpeed(veh_id, 0)
+                                            stopped_at_light = True
+                                            
+                                            if blackout_active:
+                                                # Blackout - treat as stop sign
+                                                if not hasattr(vehicle, 'stop_time'):
+                                                    vehicle.stop_time = traci.simulation.getTime()
+                                                elif traci.simulation.getTime() - vehicle.stop_time > 20:  # 2 seconds
+                                                    traci.vehicle.setSpeed(veh_id, 3)  # Proceed slowly
+                                                    vehicle.stop_time = None
+                                        
+                                        elif tl_state in ['y', 'Y'] and distance_to_end < 15:
+                                            # YELLOW LIGHT - STOP if close
+                                            traci.vehicle.setSpeed(veh_id, 0)
+                                            stopped_at_light = True
+                    except:
+                        pass
+                    
+                    # Method 2: Use getNextTLS as backup
+                    if not stopped_at_light:
+                        next_tls = traci.vehicle.getNextTLS(veh_id)
+                        if next_tls and len(next_tls) > 0:
+                            tl_info = next_tls[0]
+                            distance = tl_info[2]
+                            state = tl_info[3]
+                            
+                            # Force stop at red lights
+                            if 'r' in state.lower():
+                                if distance < 5:  # At the light
+                                    traci.vehicle.setSpeed(veh_id, 0)
+                                    stopped_at_light = True
+                                    
+                                    if blackout_active:
+                                        if not hasattr(vehicle, 'stop_time'):
+                                            vehicle.stop_time = traci.simulation.getTime()
+                                        elif traci.simulation.getTime() - vehicle.stop_time > 20:
+                                            traci.vehicle.setSpeed(veh_id, 3)
+                                            vehicle.stop_time = None
+                                elif distance < 20:  # Approaching
+                                    # Slow down gradually
+                                    target_speed = max(0, distance / 4)
+                                    traci.vehicle.setSpeed(veh_id, target_speed)
+                                    stopped_at_light = True
+                            
+                            elif 'y' in state.lower() and distance < 10:
+                                # Yellow light - stop if close
+                                traci.vehicle.setSpeed(veh_id, max(0, speed * 0.5))
+                                stopped_at_light = True
+                    
+                    # Clear stop time if moving again
+                    if speed > 1 and hasattr(vehicle, 'stop_time'):
+                        vehicle.stop_time = None
+                    
+                    # Normal movement when not at lights
+                    if not stopped_at_light and not vehicle.is_charging:
+                        if not blackout_active:
+                            traci.vehicle.setSpeed(veh_id, -1)  # Automatic speed
                     
                     vehicle.distance_traveled = traci.vehicle.getDistance(veh_id)
                     vehicle.waiting_time = traci.vehicle.getWaitingTime(veh_id)
                     
-                    # Handle EVs with CALIBRATED battery drain
+                    # Handle EVs with REALISTIC battery drain
                     if vehicle.config.is_ev and not vehicle.is_charging:
-                        # CALIBRATED DRAIN RATE FOR MANHATTAN
-                        # At 200 m/s, we travel 20m per step (0.1s steps)
-                        # To drain 30% over 5km: 5000m / 20m = 250 steps
-                        # 30% / 250 steps = 0.12% per step
+                        # Realistic drain for city driving
+                        if speed > 15:  # Fast (>54 km/h)
+                            drain_rate = 0.00008
+                        elif speed > 8:  # Normal (30-54 km/h)
+                            drain_rate = 0.00005
+                        elif speed > 2:  # Slow
+                            drain_rate = 0.00003
+                        else:  # Idle
+                            drain_rate = 0.00001
                         
-                        # Base drain rate: 0.12% per step at full speed
-                        # This ensures from farthest point with 38% battery, 
-                        # we arrive at farthest station with 8% left
-                        
-                        if speed > 150:  # Fast driving (normal for our simulation)
-                            drain_rate = 0.0012  # 0.12% per step
-                        elif speed > 50:  # Medium speed
-                            drain_rate = 0.0008  # 0.08% per step
-                        elif speed > 10:  # Slow/traffic
-                            drain_rate = 0.0005  # 0.05% per step
-                        else:  # Stopped/crawling
-                            drain_rate = 0.0002  # 0.02% per step (idle consumption)
-                        
-                        # Additional drain if accelerating hard
+                        # Additional drain for acceleration
                         try:
                             acceleration = traci.vehicle.getAcceleration(veh_id)
-                            if acceleration > 10:  # Hard acceleration
-                                drain_rate *= 1.5
+                            if acceleration > 3:
+                                drain_rate *= 1.3
                         except:
                             pass
                         
-                        # Apply battery drain
-                        old_soc = vehicle.config.current_soc
+                        # Apply drain
                         vehicle.config.current_soc -= drain_rate
                         vehicle.config.current_soc = max(0, vehicle.config.current_soc)
                         
-                        # Update SUMO battery parameter
+                        # Update SUMO battery
                         try:
                             new_battery = vehicle.config.current_soc * vehicle.config.battery_capacity_kwh * 1000
                             traci.vehicle.setParameter(veh_id, "device.battery.actualBatteryCapacity", str(new_battery))
                         except:
                             pass
                         
-                        # Visual indication of battery level
-                        if vehicle.config.current_soc < 0.08:
-                            # CRITICAL - below 8% (flashing red)
-                            import time
-                            flash = int(time.time() * 4) % 2
+                        # Visual indication
+                        if vehicle.config.current_soc <= 0.02:
+                            flash = int(time.time() * 3) % 2
                             if flash == 0:
-                                traci.vehicle.setColor(veh_id, (255, 0, 0, 255))
+                                traci.vehicle.setColor(veh_id, (255, 0, 255, 255))
                             else:
-                                traci.vehicle.setColor(veh_id, (139, 0, 0, 255))
-                        elif vehicle.config.current_soc < 0.15:
-                            # Very low - solid red
-                            traci.vehicle.setColor(veh_id, (255, 0, 0, 255))
+                                traci.vehicle.setColor(veh_id, (139, 0, 139, 255))
                         elif vehicle.config.current_soc < 0.25:
-                            # Low battery - orange  
-                            traci.vehicle.setColor(veh_id, (255, 165, 0, 255))
+                            traci.vehicle.setColor(veh_id, (255, 0, 0, 255))
                         else:
-                            # Normal - green
                             traci.vehicle.setColor(veh_id, (0, 255, 0, 255))
                         
-                        # Route to charging when below 25% (gives margin to reach station)
+                        # Route to charging when low
                         if vehicle.config.current_soc < 0.25 and not vehicle.assigned_ev_station and self.station_manager:
                             current_edge = traci.vehicle.getRoadID(veh_id)
                             
                             if current_edge and not current_edge.startswith(':'):
-                                # Convert position for station manager
                                 x, y = vehicle.position
                                 lon, lat = traci.simulation.convertGeo(x, y)
                                 
-                                # Use smart station manager
                                 result = self.station_manager.request_charging(
                                     veh_id,
                                     vehicle.config.current_soc,
@@ -865,14 +1168,12 @@ class ManhattanSUMOManager:
                                 if result:
                                     station_id, target_edge, wait_time, distance = result
                                     
-                                    # Navigate to station
                                     try:
                                         route = traci.simulation.findRoute(current_edge, target_edge)
                                         if route and route.edges:
                                             traci.vehicle.setRoute(veh_id, route.edges)
                                             vehicle.assigned_ev_station = station_id
                                             vehicle.destination = target_edge
-                                            
                                             print(f"🔋 {veh_id} (SOC: {vehicle.config.current_soc:.1%}) → {station_id}")
                                     except:
                                         pass
@@ -885,16 +1186,15 @@ class ManhattanSUMOManager:
                         if new_route and len(new_route) >= 2:
                             traci.vehicle.setRoute(veh_id, new_route)
                             vehicle.config.destination = new_route[-1]
-                    
-                except:
+                        
+                except Exception as e:
                     pass
-        
+            
         # Remove vehicles that left
         current_ids = set(vehicle_ids)
         for veh_id in list(self.vehicles.keys()):
             if veh_id not in current_ids:
                 del self.vehicles[veh_id]
-    
     def _generate_realistic_route(self) -> List[str]:
         """Generate realistic Manhattan route with validation"""
         
@@ -931,6 +1231,8 @@ class ManhattanSUMOManager:
     def _route_to_charging_station(self, vehicle):
         """Route EV to nearest available charging station"""
         
+        import traci
+        
         if not vehicle.config.is_ev or vehicle.is_charging:
             return
         
@@ -964,466 +1266,685 @@ class ManhattanSUMOManager:
             pass
     
     def _handle_ev_charging(self):
-        """Handle EV charging with proper stopping and visual feedback"""
+        """Professional EV charging handler with temporary route diversion"""
         
         import traci
         import random
+        import time
         
-        # First, update station occupancy counts
-        station_occupancy = {}
-        for station_id in self.integrated_system.ev_stations.keys():
-            station_occupancy[station_id] = {
-                'charging': [],
-                'queued': [],
-                'circling': []
-            }
-        
-        # Count vehicles at each station - ENSURE ATTRIBUTES EXIST
-        for vehicle in self.vehicles.values():
-            if vehicle.config.is_ev:
-                # Initialize attributes if they don't exist
-                if not hasattr(vehicle, 'is_charging'):
-                    vehicle.is_charging = False
-                if not hasattr(vehicle, 'is_queued'):
-                    vehicle.is_queued = False
-                if not hasattr(vehicle, 'is_circling'):
-                    vehicle.is_circling = False
-                if not hasattr(vehicle, 'is_stranded'):
-                    vehicle.is_stranded = False
-                if not hasattr(vehicle, 'queue_position'):
-                    vehicle.queue_position = 0
-                    
-                # Count vehicles at stations
-                if vehicle.assigned_ev_station:
-                    station_id = vehicle.assigned_ev_station
-                    if station_id in station_occupancy:
-                        if vehicle.is_charging:
-                            station_occupancy[station_id]['charging'].append(vehicle.id)
-                        elif vehicle.is_queued:
-                            station_occupancy[station_id]['queued'].append(vehicle.id)
-                        elif vehicle.is_circling:
-                            station_occupancy[station_id]['circling'].append(vehicle.id)
-        
-        # Process each EV
-        for vehicle in list(self.vehicles.values()):  # Use list() to avoid iteration issues
+        for vehicle in list(self.vehicles.values()):
             if not vehicle.config.is_ev:
                 continue
             
             try:
                 veh_id = vehicle.id
                 
-                # Get vehicle position safely
                 if veh_id not in traci.vehicle.getIDList():
                     continue
-                    
-                current_edge = traci.vehicle.getRoadID(veh_id)
                 
-                # Skip if on internal edge
+                current_edge = traci.vehicle.getRoadID(veh_id)
                 if current_edge.startswith(':'):
                     continue
                 
-                # CHECK IF VEHICLE IS OUT OF BATTERY (STRANDED)
-                if vehicle.config.current_soc <= 0.01:  # Less than 1% battery
+                # Initialize attributes
+                if not hasattr(vehicle, 'is_charging'):
+                    vehicle.is_charging = False
+                if not hasattr(vehicle, 'charging_start_time'):
+                    vehicle.charging_start_time = None
+                if not hasattr(vehicle, 'is_stranded'):
+                    vehicle.is_stranded = False
+                if not hasattr(vehicle, 'diversion_start_time'):
+                    vehicle.diversion_start_time = None
+                if not hasattr(vehicle, 'is_diverted'):
+                    vehicle.is_diverted = False
+                if not hasattr(vehicle, 'stations_tried'):
+                    vehicle.stations_tried = []
+                
+                # STRANDED - Battery at 2% or less
+                if vehicle.config.current_soc <= 0.02:
                     if not vehicle.is_stranded:
                         vehicle.is_stranded = True
                         vehicle.is_charging = False
-                        vehicle.is_queued = False
-                        vehicle.is_circling = False
-                        
-                        # Stop the vehicle completely
-                        try:
-                            traci.vehicle.setSpeed(veh_id, 0)
-                            traci.vehicle.setSpeedMode(veh_id, 0)
-                        except:
-                            pass
-                        
-                        print(f"💀 {veh_id} STRANDED - BATTERY DEAD at {current_edge}!")
-                        
-                    # Flashing effect for stranded vehicle
-                    import time
-                    flash = int(time.time() * 2) % 2  # Flash every 0.5 seconds
-                    if flash == 0:
-                        traci.vehicle.setColor(veh_id, (255, 0, 255, 255))  # Magenta
-                    else:
-                        traci.vehicle.setColor(veh_id, (128, 0, 128, 255))  # Dark magenta
-                    continue  # Skip rest of processing for dead vehicle
+                        vehicle.is_diverted = False
+                        print(f"🚨 {veh_id} STRANDED at {vehicle.config.current_soc:.1%} battery")
+                    
+                    # Force complete stop
+                    traci.vehicle.setSpeed(veh_id, 0)
+                    traci.vehicle.setRoute(veh_id, [current_edge])
+                    
+                    # Flashing purple emergency
+                    flash = int(time.time() * 3) % 2
+                    traci.vehicle.setColor(veh_id, (255, 0, 255, 255) if flash else (139, 0, 139, 255))
+                    continue
                 
-                # If vehicle has no assigned station but needs charging
-                if not vehicle.assigned_ev_station and vehicle.config.current_soc < 0.25:
-                    # Find nearest operational station
-                    best_station = None
-                    min_dist = float('inf')
+                # NEEDS CHARGING - Below 25%
+                if vehicle.config.current_soc < 0.25 and not vehicle.is_charging and not vehicle.is_stranded:
                     
-                    for ev_id, ev_station in self.integrated_system.ev_stations.items():
-                        if not ev_station['operational']:
-                            continue
+                    current_time = traci.simulation.getTime()
+                    
+                    # CHECK IF DIVERTED AND TIME TO RETURN
+                    if vehicle.is_diverted and vehicle.diversion_start_time:
+                        time_diverted = current_time - vehicle.diversion_start_time
                         
-                        # Check if station has space
-                        if ev_id in station_occupancy:
-                            if len(station_occupancy[ev_id]['charging']) >= 20 and len(station_occupancy[ev_id]['queued']) >= 20:
-                                continue  # Station full
-                        
-                        # Simple distance check
-                        if hasattr(self, 'station_manager') and self.station_manager:
-                            if ev_id in self.station_manager.stations:
-                                station_edge = self.station_manager.stations[ev_id]['edge']
-                                try:
-                                    route = traci.simulation.findRoute(current_edge, station_edge)
-                                    if route and route.edges and len(route.edges) < min_dist:
-                                        min_dist = len(route.edges)
-                                        best_station = ev_id
-                                except:
-                                    pass
+                        if time_diverted >= 1:  # 10 seconds (100 * 0.1s steps)
+                            print(f"⏰ {veh_id} returning to seek charging after diversion")
+                            vehicle.is_diverted = False
+                            vehicle.diversion_start_time = None
+                            vehicle.assigned_ev_station = None  # Reset to find new station
                     
-                    if best_station:
-                        vehicle.assigned_ev_station = best_station
-                        if self.station_manager and best_station in self.station_manager.stations:
-                            station_edge = self.station_manager.stations[best_station]['edge']
+                    # FIND CHARGING STATION
+                    if not vehicle.is_diverted:
+                        # Look for best available station
+                        if not vehicle.assigned_ev_station:
+                            best_station = self._find_available_charging_station(veh_id, vehicle.stations_tried)
                             
-                            try:
-                                route = traci.simulation.findRoute(current_edge, station_edge)
-                                if route and route.edges:
-                                    traci.vehicle.setRoute(veh_id, route.edges)
-                                    station_name = self.integrated_system.ev_stations[best_station]['name']
-                                    print(f"🔋 {veh_id} (SOC: {vehicle.config.current_soc:.0%}) → {station_name}")
-                            except Exception as e:
-                                print(f"Route error for {veh_id}: {e}")
-                
-                # Check if vehicle is at its assigned charging station
-                if vehicle.assigned_ev_station and self.station_manager:
-                    station = self.station_manager.stations.get(vehicle.assigned_ev_station)
-                    
-                    if not station:
-                        continue
-                    
-                    # Check if station has power
-                    ev_station_info = self.integrated_system.ev_stations.get(vehicle.assigned_ev_station)
-                    if ev_station_info and not ev_station_info['operational']:
-                        print(f"⚡ {veh_id} at {station['name']} - NO POWER!")
-                        vehicle.assigned_ev_station = None
-                        vehicle.is_charging = False
-                        vehicle.is_queued = False
-                        vehicle.is_circling = False
-                        continue
-                    
-                    # Check if at charging station edge
-                    if current_edge == station['edge']:
-                        # Get current station occupancy
-                        station_id = vehicle.assigned_ev_station
-                        charging_count = len(station_occupancy[station_id]['charging'])
-                        queued_count = len(station_occupancy[station_id]['queued'])
-                        
-                        # Vehicle just arrived at station - check if not already processed
-                        if not vehicle.is_charging and not vehicle.is_queued and not vehicle.is_circling:
-                            
-                            print(f"📍 {veh_id} arrived at {station['name']}: {charging_count}/20 charging, {queued_count}/20 queued")
-                            
-                            if charging_count < 20:
-                                # SPACE AVAILABLE TO CHARGE IMMEDIATELY
-                                vehicle.is_charging = True
-                                vehicle.is_queued = False
-                                vehicle.is_circling = False
-                                station_occupancy[station_id]['charging'].append(veh_id)
-                                
-                                # Park for charging
-                                try:
-                                    lane_pos = traci.vehicle.getLanePosition(veh_id)
-                                    lane_id = traci.vehicle.getLaneID(veh_id)
-                                    
-                                    # Calculate parking position
-                                    parking_offset = 10 + (charging_count * 5)  # Space out vehicles
-                                    stop_pos = min(lane_pos + parking_offset, traci.lane.getLength(lane_id) - 5)
-                                    
-                                    # Stop for 5 minutes (3000 steps)
-                                    traci.vehicle.setStop(
-                                        veh_id,
-                                        current_edge,
-                                        pos=stop_pos,
-                                        laneIndex=0,
-                                        duration=3000,
-                                        flags=1  # Parking
-                                    )
-                                    
-                                    # Visual: Cyan for charging
-                                    traci.vehicle.setColor(veh_id, (0, 255, 255, 255))
-                                    
-                                    print(f"⚡ {veh_id} CHARGING at {station['name']} (Slot {charging_count + 1}/20)")
-                                    
-                                    # Update statistics immediately
-                                    self.stats['vehicles_charging'] = sum(
-                                        len(s['charging']) for s in station_occupancy.values()
-                                    )
-                                    
-                                except Exception as e:
-                                    print(f"Error parking {veh_id}: {e}")
-                                
-                            elif queued_count < 20:
-                                # JOIN QUEUE
-                                vehicle.is_queued = True
-                                vehicle.is_charging = False
-                                vehicle.is_circling = False
-                                vehicle.queue_position = queued_count + 1
-                                station_occupancy[station_id]['queued'].append(veh_id)
-                                
-                                # Park in queue area
-                                try:
-                                    lane_pos = traci.vehicle.getLanePosition(veh_id)
-                                    lane_id = traci.vehicle.getLaneID(veh_id)
-                                    
-                                    # Queue behind charging area
-                                    queue_offset = 150 + (queued_count * 5)
-                                    queue_pos = min(lane_pos + queue_offset, traci.lane.getLength(lane_id) - 5)
-                                    
-                                    # Stop for 1 minute then check again
-                                    traci.vehicle.setStop(
-                                        veh_id,
-                                        current_edge,
-                                        pos=queue_pos,
-                                        laneIndex=0,
-                                        duration=600,
-                                        flags=0  # Waiting, not parking
-                                    )
-                                    
-                                    # Visual: Yellow for waiting
-                                    traci.vehicle.setColor(veh_id, (255, 255, 0, 255))
-                                    
-                                    print(f"⏳ {veh_id} QUEUED at {station['name']} (Position {vehicle.queue_position}/20)")
-                                except Exception as e:
-                                    print(f"Error queuing {veh_id}: {e}")
-                                
+                            if best_station:
+                                vehicle.assigned_ev_station = best_station
+                                station_name = self.integrated_system.ev_stations[best_station]['name']
+                                print(f"🔋 {veh_id} (SOC: {vehicle.config.current_soc:.0%}) → {station_name}")
                             else:
-                                # STATION COMPLETELY FULL - START CIRCLING
-                                vehicle.is_circling = True
-                                vehicle.is_charging = False
-                                vehicle.is_queued = False
-                                station_occupancy[station_id]['circling'].append(veh_id)
-                                
-                                print(f"❌ {station['name']} FULL! {veh_id} will circle nearby")
-                                
-                                # Create circular route around station
-                                try:
-                                    # Get nearby edges
-                                    all_edges = traci.edge.getIDList()
-                                    nearby_edges = []
-                                    
-                                    # Find edges near the station
-                                    for edge in all_edges[:50]:  # Check first 50 edges
-                                        if not edge.startswith(':') and edge != current_edge:
-                                            nearby_edges.append(edge)
-                                    
-                                    if len(nearby_edges) >= 3:
-                                        # Create a circular route
-                                        circle_route = [current_edge]
-                                        for i in range(3):
-                                            if nearby_edges:
-                                                next_edge = random.choice(nearby_edges)
-                                                circle_route.append(next_edge)
-                                                nearby_edges.remove(next_edge)
-                                        circle_route.append(current_edge)  # Return to station
-                                        
-                                        traci.vehicle.setRoute(veh_id, circle_route)
-                                        
-                                        # Slow down to conserve battery
-                                        traci.vehicle.setSpeed(veh_id, 50)  # Slower speed while circling
-                                        
-                                        # Visual: Dark orange for circling
-                                        traci.vehicle.setColor(veh_id, (255, 140, 0, 255))
-                                        
-                                        print(f"🔄 {veh_id} circling route: {' → '.join(circle_route[:3])}...")
-                                except Exception as e:
-                                    print(f"Error setting circle route for {veh_id}: {e}")
+                                # No stations available, clear tried list and try again
+                                if vehicle.stations_tried:
+                                    print(f"♻️ {veh_id} resetting station search")
+                                    vehicle.stations_tried = []
                         
-                        # Handle vehicles already charging
-                        elif vehicle.is_charging:
-                            # Make sure vehicle stays stopped
-                            if traci.vehicle.getSpeed(veh_id) > 0.1:
-                                traci.vehicle.setSpeed(veh_id, 0)
+                        # HANDLE STATION INTERACTION
+                        if vehicle.assigned_ev_station and self.station_manager:
+                            station = self.station_manager.stations.get(vehicle.assigned_ev_station)
                             
-                            # Animated charging effect
-                            import time
-                            pulse = int(time.time() * 4) % 4
-                            colors = [(0, 255, 255, 255), (100, 255, 255, 255), 
-                                    (0, 200, 255, 255), (150, 255, 255, 255)]
-                            traci.vehicle.setColor(veh_id, colors[pulse])
-                            
-                            # Update battery
-                            old_soc = vehicle.config.current_soc
-                            charge_rate = 0.00027  # 80% in 3000 steps
-                            vehicle.config.current_soc = min(0.80, vehicle.config.current_soc + charge_rate)
-                            
-                            # Update SUMO battery
-                            new_battery = vehicle.config.current_soc * vehicle.config.battery_capacity_kwh * 1000
-                            traci.vehicle.setParameter(veh_id, "device.battery.actualBatteryCapacity", str(new_battery))
-                            
-                            # Show progress every 20%
-                            if int(old_soc * 5) != int(vehicle.config.current_soc * 5):
-                                print(f"🔋 {veh_id} @ {station['name']}: {vehicle.config.current_soc:.0%} charged")
-                            
-                            # Finish charging at 80%
-                            if vehicle.config.current_soc >= 0.80:
-                                vehicle.is_charging = False
-                                vehicle.assigned_ev_station = None
+                            if station:
+                                at_station = (current_edge == station['edge'])
                                 
-                                # Remove from charging list
-                                if veh_id in station_occupancy[station_id]['charging']:
-                                    station_occupancy[station_id]['charging'].remove(veh_id)
+                                # AT STATION - Try to charge
+                                if at_station:
+                                    can_charge = self.station_manager.request_charging_simple(
+                                        veh_id, vehicle.assigned_ev_station
+                                    )
+                                    
+                                    if can_charge:
+                                        # SUCCESS - Start charging
+                                        vehicle.is_charging = True
+                                        vehicle.charging_start_time = traci.simulation.getTime()
+                                        vehicle.stations_tried = []  # Clear for next time
+                                        
+                                        traci.vehicle.setSpeed(veh_id, 0)
+                                        traci.vehicle.setColor(veh_id, (0, 255, 255, 255))
+                                        
+                                        station_name = self.integrated_system.ev_stations[vehicle.assigned_ev_station]['name']
+                                        print(f"⚡ {veh_id} CHARGING at {station_name}")
+                                        
+                                    else:
+                                        # STATION FULL - Divert temporarily
+                                        station_name = self.integrated_system.ev_stations[vehicle.assigned_ev_station]['name']
+                                        print(f"🚫 {station_name} FULL - {veh_id} diverting temporarily")
+                                        
+                                        # Mark station as tried
+                                        if vehicle.assigned_ev_station not in vehicle.stations_tried:
+                                            vehicle.stations_tried.append(vehicle.assigned_ev_station)
+                                        
+                                        # Start diversion
+                                        vehicle.is_diverted = True
+                                        vehicle.diversion_start_time = current_time
+                                        vehicle.assigned_ev_station = None
+                                        
+                                        # Create random diversion route
+                                        diversion_route = self._create_diversion_route(current_edge)
+                                        if diversion_route:
+                                            traci.vehicle.setRoute(veh_id, diversion_route)
+                                            traci.vehicle.setColor(veh_id, (255, 165, 0, 255))  # Orange while diverted
+                                            print(f"🔄 {veh_id} diverted to random route for 10 seconds")
                                 
-                                # Check if anyone is queued
-                                if station_occupancy[station_id]['queued']:
-                                    next_veh = station_occupancy[station_id]['queued'][0]
-                                    print(f"📢 {next_veh} can now charge (was queued)")
-                                
-                                # Resume driving
-                                traci.vehicle.resume(veh_id)
-                                traci.vehicle.setColor(veh_id, (0, 255, 0, 255))  # Green
-                                traci.vehicle.setSpeed(veh_id, 200)  # Back to fast speed
-                                
-                                print(f"✅ {veh_id} FULLY CHARGED! Leaving {station['name']}")
-                                
-                                # Set new destination
-                                edges = [e for e in traci.edge.getIDList() if not e.startswith(':')]
-                                if edges:
-                                    new_dest = random.choice(edges)
+                                # NAVIGATING TO STATION
+                                else:
                                     try:
-                                        route = traci.simulation.findRoute(current_edge, new_dest)
+                                        route = traci.simulation.findRoute(current_edge, station['edge'])
                                         if route and route.edges:
                                             traci.vehicle.setRoute(veh_id, route.edges)
+                                            
+                                            # Color based on urgency
+                                            if vehicle.config.current_soc < 0.10:
+                                                traci.vehicle.setColor(veh_id, (255, 0, 0, 255))  # Red - critical
+                                            else:
+                                                traci.vehicle.setColor(veh_id, (255, 140, 0, 255))  # Orange - low
                                     except:
                                         pass
+                
+                # ACTIVELY CHARGING
+                if vehicle.is_charging:
+                    traci.vehicle.setSpeed(veh_id, 0)
+                    
+                    # Charging animation
+                    pulse = int(time.time() * 4) % 4
+                    colors = [(0, 255, 255, 255), (50, 255, 255, 255), 
+                            (0, 200, 255, 255), (100, 255, 255, 255)]
+                    traci.vehicle.setColor(veh_id, colors[pulse])
+                    
+                    # Update battery
+                    old_soc = vehicle.config.current_soc
+                    vehicle.config.current_soc = min(0.80, vehicle.config.current_soc + 0.005)
+                    
+                    # Progress indicator
+                    if int(old_soc * 20) != int(vehicle.config.current_soc * 20):
+                        station_name = self.integrated_system.ev_stations[vehicle.assigned_ev_station]['name']
+                        print(f"🔋 {veh_id}: {vehicle.config.current_soc:.0%} at {station_name}")
+                    
+                    # Charging complete
+                    if vehicle.config.current_soc >= 0.80:
+                        station_name = self.integrated_system.ev_stations[vehicle.assigned_ev_station]['name']
+                        print(f"✅ {veh_id} FULLY CHARGED at {station_name}!")
                         
-                        # Handle queued vehicles
-                        elif vehicle.is_queued:
-                            # Check if can move to charging
-                            if len(station_occupancy[station_id]['charging']) < 20:
-                                vehicle.is_queued = False
-                                vehicle.is_charging = True
-                                
-                                # Update lists
-                                if veh_id in station_occupancy[station_id]['queued']:
-                                    station_occupancy[station_id]['queued'].remove(veh_id)
-                                station_occupancy[station_id]['charging'].append(veh_id)
-                                
-                                print(f"📤 {veh_id} moved from QUEUE to CHARGING at {station['name']}")
-                                
-                                # Move to charging position
-                                traci.vehicle.resume(veh_id)
-                                
-                                # Re-stop for charging
-                                try:
-                                    lane_pos = traci.vehicle.getLanePosition(veh_id)
-                                    charging_count = len(station_occupancy[station_id]['charging'])
-                                    stop_pos = min(10 + (charging_count * 5), traci.lane.getLength(traci.vehicle.getLaneID(veh_id)) - 5)
-                                    
-                                    traci.vehicle.setStop(
-                                        veh_id,
-                                        current_edge,
-                                        pos=stop_pos,
-                                        laneIndex=0,
-                                        duration=3000,
-                                        flags=1
-                                    )
-                                    
-                                    traci.vehicle.setColor(veh_id, (0, 255, 255, 255))
-                                except:
-                                    pass
+                        # Release charging port
+                        if self.station_manager:
+                            self.station_manager.finish_charging(veh_id)
                         
-                        # Handle circling vehicles  
-                        elif vehicle.is_circling:
-                            # Check station availability periodically
-                            charging_count = len(station_occupancy[station_id]['charging'])
-                            queued_count = len(station_occupancy[station_id]['queued'])
+                        # Reset states
+                        vehicle.is_charging = False
+                        vehicle.assigned_ev_station = None
+                        vehicle.stations_tried = []
+                        vehicle.is_diverted = False
+                        vehicle.config.current_soc = 0.80
+                        
+                        # Resume normal operation
+                        traci.vehicle.setColor(veh_id, (0, 255, 0, 255))
+                        traci.vehicle.setMaxSpeed(veh_id, 200)
+                        traci.vehicle.setSpeed(veh_id, -1)
+                        
+                        # Set new random destination
+                        new_route = self._create_random_route(current_edge)
+                        if new_route:
+                            traci.vehicle.setRoute(veh_id, new_route)
+                
+                # BATTERY DRAIN
+# BATTERY DRAIN - REALISTIC RATES
+                if not vehicle.is_charging and not vehicle.is_stranded:
+                    speed = traci.vehicle.getSpeed(veh_id)
+                    if speed > 0:
+                        # Realistic city driving consumption
+                        if speed > 15:  # >54 km/h
+                            drain_rate = 0.00008
+                        elif speed > 8:  # 30-54 km/h
+                            drain_rate = 0.00005
+                        else:  # <30 km/h
+                            drain_rate = 0.00003
+                        
+                        vehicle.config.current_soc -= drain_rate
+                        vehicle.config.current_soc = max(0, vehicle.config.current_soc)
+                        
+                        # Update color for normal EVs
+                        if vehicle.config.current_soc >= 0.25 and not vehicle.is_diverted:
+                            traci.vehicle.setColor(veh_id, (0, 255, 0, 255))
+                
+                # PREVENT ROUTE COMPLETION FOR LOW BATTERY EVS
+                if vehicle.config.current_soc < 0.25 and not vehicle.is_charging:
+                    route = traci.vehicle.getRoute(veh_id)
+                    route_index = traci.vehicle.getRouteIndex(veh_id)
+                    
+                    # If approaching end of route, extend it
+                    if route_index >= len(route) - 2:
+                        # Add more edges to prevent removal
+                        extension = self._create_route_extension(route[-1] if route else current_edge)
+                        if extension:
+                            new_route = list(route) + extension
+                            traci.vehicle.setRoute(veh_id, new_route)
                             
-                            if charging_count < 20 or queued_count < 20:
-                                # Space available! Stop circling
-                                vehicle.is_circling = False
-                                print(f"🎉 {veh_id} found space! Returning to {station['name']}")
-                                
-                                # Route back to station
-                                try:
-                                    route = traci.simulation.findRoute(current_edge, station['edge'])
-                                    if route and route.edges:
-                                        traci.vehicle.setRoute(veh_id, route.edges)
-                                        traci.vehicle.setSpeed(veh_id, 200)  # Speed up
-                                except:
-                                    pass
-                            else:
-                                # Continue circling, battery draining
-                                if vehicle.config.current_soc <= 0.01:
-                                    vehicle.is_circling = False
-                                    vehicle.is_stranded = True
-                                    print(f"💀 {veh_id} ran out of battery while circling!")
-                        
             except Exception as e:
-                if "resume" not in str(e) and "stop" not in str(e):
-                    print(f"Charging error for {vehicle.id}: {e}")
+                if "speed" not in str(e).lower():
+                    print(f"EV handler error for {vehicle.id}: {e}")
+
+
+    def _find_nearest_available_station(self, vehicle_id: str, excluded_stations: list) -> Optional[str]:
+        """Find the NEAREST available charging station, excluding tried ones"""
         
-        # Update global statistics
-        total_charging = sum(len(s['charging']) for s in station_occupancy.values())
-        total_queued = sum(len(s['queued']) for s in station_occupancy.values())
-        total_circling = sum(len(s['circling']) for s in station_occupancy.values())
+        import traci
         
-        self.stats['vehicles_charging'] = total_charging
-        self.stats['vehicles_queued'] = total_queued
-        self.stats['vehicles_circling'] = total_circling
+        if not self.station_manager:
+            return None
         
-        # Print summary every 100 steps
-        if hasattr(self, 'step_counter'):
-            self.step_counter += 1
-        else:
-            self.step_counter = 0
+        try:
+            x, y = traci.vehicle.getPosition(vehicle_id)
+            vehicle_lon, vehicle_lat = traci.simulation.convertGeo(x, y)
+        except:
+            return None
+        
+        best_station = None
+        min_distance = float('inf')
+        
+        # Check ALL stations and find the nearest available one
+        for station_id, station in self.station_manager.stations.items():
+            # Skip excluded stations
+            if station_id in excluded_stations:
+                continue
             
-        if self.step_counter % 100 == 0 and (total_charging > 0 or total_queued > 0):
-            print(f"\n📊 CHARGING STATUS: {total_charging} charging, {total_queued} queued, {total_circling} circling")
+            # Check if operational
+            if not station['operational']:
+                continue
+            
+            # Check availability (strict check)
+            occupied = len(station['vehicles_charging'])
+            if occupied >= 20:  # Station completely full
+                continue
+            
+            # Calculate distance
+            station_info = self.integrated_system.ev_stations.get(station_id)
+            if not station_info:
+                continue
+            
+            dist = self._calculate_straight_distance(
+                vehicle_lat, vehicle_lon,
+                station_info['lat'], station_info['lon']
+            )
+            
+            # Always pick the nearest one
+            if dist < min_distance:
+                min_distance = dist
+                best_station = station_id
+        
+        return best_station
+
+
+    def _create_diversion_route(self, current_edge: str) -> List[str]:
+        """Create a temporary diversion route for 10 seconds of driving"""
+        
+        import traci
+        import random
+        
+        all_edges = [e for e in traci.edge.getIDList() if not e.startswith(':')]
+        
+        if len(all_edges) < 5:
+            return []
+        
+        # Pick 5-8 random edges for diversion
+        num_edges = random.randint(5, min(8, len(all_edges)))
+        diversion_edges = random.sample(all_edges, num_edges)
+        
+        # Start from current edge
+        route = [current_edge]
+        
+        # Add edges that are reachable
+        for edge in diversion_edges:
+            try:
+                path = traci.simulation.findRoute(route[-1], edge)
+                if path and path.edges:
+                    route.extend(path.edges[1:])  # Skip first edge (already in route)
+            except:
+                continue
+        
+        return route if len(route) > 1 else [current_edge]
+
+
+    def _create_random_route(self, current_edge: str) -> List[str]:
+        """Create a random route for normal driving"""
+        
+        import traci
+        import random
+        
+        all_edges = [e for e in traci.edge.getIDList() if not e.startswith(':')]
+        
+        if not all_edges:
+            return []
+        
+        destination = random.choice(all_edges)
+        
+        try:
+            route = traci.simulation.findRoute(current_edge, destination)
+            if route and route.edges:
+                return route.edges
+        except:
+            pass
+        
+        return [current_edge, destination] if destination != current_edge else []
+
+
+    def _create_route_extension(self, last_edge: str) -> List[str]:
+        """Create route extension to prevent vehicle removal"""
+        
+        import traci
+        import random
+        
+        all_edges = [e for e in traci.edge.getIDList() if not e.startswith(':')]
+        
+        if not all_edges:
+            return []
+        
+        # Add 3-5 random edges
+        extension = random.sample(all_edges, min(5, len(all_edges)))
+        return extension
+
+
+    def _find_available_charging_station(self, vehicle_id: str, excluded_stations: list) -> Optional[str]:
+        """Find nearest available charging station excluding tried ones"""
+        
+        import traci
+        
+        if not self.station_manager:
+            return None
+        
+        try:
+            x, y = traci.vehicle.getPosition(vehicle_id)
+            vehicle_lon, vehicle_lat = traci.simulation.convertGeo(x, y)
+        except:
+            return None
+        
+        best_station = None
+        min_distance = float('inf')
+        
+        for station_id, station in self.station_manager.stations.items():
+            # Skip excluded stations
+            if station_id in excluded_stations:
+                continue
+            
+            # Check if operational
+            if not station['operational']:
+                continue
+            
+            # Check availability (with some buffer)
+            occupied = len(station['vehicles_charging'])
+            if occupied >= 18:  # Leave some buffer (18/20)
+                continue
+            
+            # Calculate distance
+            station_info = self.integrated_system.ev_stations.get(station_id)
+            if not station_info:
+                continue
+            
+            dist = self._calculate_straight_distance(
+                vehicle_lat, vehicle_lon,
+                station_info['lat'], station_info['lon']
+            )
+            
+            if dist < min_distance:
+                min_distance = dist
+                best_station = station_id
+        
+        return best_station
+
+
+
+
+
+
+
+
+    def _find_best_available_station(self, vehicle_id: str, stations_to_exclude: set) -> Optional[str]:
+        """Find the best available charging station, excluding ones already tried"""
+        
+        import traci
+        
+        if not self.station_manager:
+            return None
+        
+        try:
+            # Get vehicle position
+            x, y = traci.vehicle.getPosition(vehicle_id)
+            vehicle_lon, vehicle_lat = traci.simulation.convertGeo(x, y)
+        except:
+            return None
+        
+        best_station = None
+        min_score = float('inf')
+        
+        for station_id, station in self.station_manager.stations.items():
+            # Skip stations we've already tried
+            if station_id in stations_to_exclude:
+                continue
+            
+            # Check if station is operational
+            if not station['operational']:
+                continue
+            
+            # Check if station has available slots
+            occupied = len(station['vehicles_charging'])
+            if occupied >= 20:
+                continue
+            
+            # Calculate score (distance + occupancy penalty)
+            station_info = self.integrated_system.ev_stations.get(station_id)
+            if not station_info:
+                continue
+            
+            # Distance component
+            dist = self._calculate_straight_distance(
+                vehicle_lat, vehicle_lon,
+                station_info['lat'], station_info['lon']
+            )
+            
+            # Occupancy penalty (prefer less crowded stations)
+            occupancy_penalty = (occupied / 20) * 0.5  # Up to 50% penalty for full stations
+            
+            # Combined score
+            score = dist * (1 + occupancy_penalty)
+            
+            if score < min_score:
+                min_score = score
+                best_station = station_id
+        
+        return best_station
+
+
+    def _maintain_circle_route(self, veh_id, vehicle, station_edge):
+        """Maintain the circular route for a vehicle waiting for charging"""
+        
+        import traci
+        
+        try:
+            # Check if we need to restart the loop
+            route_index = traci.vehicle.getRouteIndex(veh_id)
+            current_route = traci.vehicle.getRoute(veh_id)
+            
+            # If near end of route, restart the circle
+            if route_index >= len(current_route) - 1:
+                if vehicle.circle_route and len(vehicle.circle_route) > 1:
+                    # Reset to beginning of circle route
+                    traci.vehicle.setRoute(veh_id, vehicle.circle_route)
+                    vehicle.circle_position = 0
+                else:
+                    # Create a new circle route if needed
+                    new_route = self._create_robust_circle_route(veh_id, station_edge)
+                    if new_route:
+                        vehicle.circle_route = new_route
+                        traci.vehicle.setRoute(veh_id, new_route)
+        except:
+            pass
+
+
+    def _create_robust_circle_route(self, veh_id, station_edge):
+        """Create a ROBUST circular route that ALWAYS returns valid path"""
+        
+        import traci
+        import random
+        
+        print(f"Creating circle route for {veh_id} around station at {station_edge}")
+        
+        try:
+            # Get all valid edges
+            all_edges = [e for e in traci.edge.getIDList() if not e.startswith(':')]
+            
+            # Strategy 1: Find directly connected edges
+            connected_edges = []
+            try:
+                station_from = traci.edge.getFromNode(station_edge)
+                station_to = traci.edge.getToNode(station_edge)
+                
+                for edge in all_edges:
+                    if edge == station_edge:
+                        continue
+                        
+                    from_node = traci.edge.getFromNode(edge)
+                    to_node = traci.edge.getToNode(edge)
+                    
+                    # Check direct connection
+                    if (from_node == station_to or to_node == station_from or
+                        from_node == station_from or to_node == station_to):
+                        connected_edges.append(edge)
+            except:
+                pass
+            
+            # Strategy 2: Find edges within 2-3 hops
+            nearby_edges = []
+            for edge in all_edges[:30]:  # Check first 30 edges
+                if edge != station_edge:
+                    try:
+                        # Check if reachable from station
+                        route_there = traci.simulation.findRoute(station_edge, edge)
+                        if route_there and len(route_there.edges) <= 3:
+                            # Check if can return to station
+                            route_back = traci.simulation.findRoute(edge, station_edge)
+                            if route_back and len(route_back.edges) <= 3:
+                                nearby_edges.append(edge)
+                                if len(nearby_edges) >= 5:  # Found enough
+                                    break
+                    except:
+                        continue
+            
+            # Build the circular route
+            circle_route = []
+            
+            if len(connected_edges) >= 2:
+                # Use connected edges for tight circle
+                selected = random.sample(connected_edges, min(3, len(connected_edges)))
+                circle_route = [station_edge] + selected + [station_edge]
+                print(f"Created connected circle: {circle_route}")
+                
+            elif len(nearby_edges) >= 2:
+                # Use nearby edges for wider circle
+                selected = random.sample(nearby_edges, min(3, len(nearby_edges)))
+                circle_route = [station_edge]
+                
+                for edge in selected:
+                    # Add intermediate edges if needed
+                    route = traci.simulation.findRoute(circle_route[-1], edge)
+                    if route and route.edges:
+                        for e in route.edges:
+                            if e not in circle_route:
+                                circle_route.append(e)
+                
+                # Complete the loop back to station
+                route_back = traci.simulation.findRoute(circle_route[-1], station_edge)
+                if route_back and route_back.edges:
+                    for e in route_back.edges[:-1]:  # Don't duplicate station_edge
+                        if e not in circle_route:
+                            circle_route.append(e)
+                
+                circle_route.append(station_edge)
+                print(f"Created nearby circle: {len(circle_route)} edges")
+                
+            else:
+                # Fallback: Simple back-and-forth
+                if len(all_edges) > 1:
+                    # Find ANY edge we can reach
+                    for edge in all_edges[:50]:
+                        if edge != station_edge:
+                            try:
+                                route = traci.simulation.findRoute(station_edge, edge)
+                                if route and route.edges:
+                                    # Simple back and forth
+                                    circle_route = [station_edge, edge, station_edge]
+                                    print(f"Created fallback route: {circle_route}")
+                                    break
+                            except:
+                                continue
+            
+            # Ultimate fallback
+            if not circle_route:
+                # Just oscillate on current edge
+                circle_route = [station_edge]
+                print(f"WARNING: Using single edge fallback")
+            
+            return circle_route
+            
+        except Exception as e:
+            print(f"Error in create_robust_circle_route: {e}")
+            # Return station edge as last resort
+            return [station_edge]
+    
+    def _create_circle_route(self, vehicle):
+        """Create a circular route for vehicle to follow while waiting"""
+        
+        import traci
+        import random
+        
+        try:
+            veh_id = vehicle.id
+            current_edge = traci.vehicle.getRoadID(veh_id)
+            
+            # Get nearby edges
+            all_edges = [e for e in traci.edge.getIDList() if not e.startswith(':')]
+            
+            # Create a small loop (3-4 edges)
+            circle_route = [current_edge]
+            
+            # Pick 3 random nearby edges
+            for _ in range(3):
+                if all_edges:
+                    next_edge = random.choice(all_edges)
+                    if next_edge != circle_route[-1]:
+                        circle_route.append(next_edge)
+            
+            # Return to starting edge (complete circle)
+            if vehicle.assigned_ev_station and self.station_manager:
+                station = self.station_manager.stations.get(vehicle.assigned_ev_station)
+                if station:
+                    circle_route.append(station['edge'])
+            else:
+                circle_route.append(current_edge)
+            
+            # Set the circular route
+            traci.vehicle.setRoute(veh_id, circle_route)
+            
+            # Reduce speed while circling to save battery
+            traci.vehicle.setMaxSpeed(veh_id, 30)  # 30 m/s while circling
+            
+            vehicle.circle_route = circle_route
+            
+        except Exception as e:
+            print(f"Error creating circle route: {e}")
+    
     def get_statistics(self) -> Dict:
-        """Get current simulation statistics"""
+        """Get current simulation statistics - PROPERLY COUNT CHARGING VEHICLES"""
         
-        # Count actual charging, queued, circling and stranded vehicles
-        actual_charging = 0
-        actual_queued = 0
-        actual_circling = 0
-        actual_stranded = 0
+        # Count vehicle states directly
+        charging_count = 0
+        stranded_count = 0
+        low_battery_count = 0
+        circling_count = 0
         
-        # Debug tracking
-        charging_vehicles = []
-        queued_vehicles = []
-        
+        # Check each vehicle's actual state
         for vehicle in self.vehicles.values():
             if vehicle.config.is_ev:
-                # Initialize attributes if they don't exist
-                if not hasattr(vehicle, 'is_charging'):
-                    vehicle.is_charging = False
-                if not hasattr(vehicle, 'is_queued'):
-                    vehicle.is_queued = False
-                if not hasattr(vehicle, 'is_circling'):
-                    vehicle.is_circling = False
-                if not hasattr(vehicle, 'is_stranded'):
-                    vehicle.is_stranded = False
+                # Count charging vehicles
+                if hasattr(vehicle, 'is_charging') and vehicle.is_charging:
+                    charging_count += 1
                 
-                # Count based on states (priority order matters)
-                if vehicle.is_stranded:
-                    actual_stranded += 1
-                elif vehicle.is_charging:
-                    actual_charging += 1
-                    charging_vehicles.append(f"{vehicle.id}@{vehicle.assigned_ev_station}")
-                elif vehicle.is_queued:
-                    actual_queued += 1
-                    queued_vehicles.append(f"{vehicle.id}@{vehicle.assigned_ev_station}")
-                elif vehicle.is_circling:
-                    actual_circling += 1
+                # Count stranded vehicles  
+                if hasattr(vehicle, 'is_stranded') and vehicle.is_stranded:
+                    stranded_count += 1
+                
+                # Count circling vehicles
+                if hasattr(vehicle, 'is_circling') and vehicle.is_circling:
+                    circling_count += 1
+                
+                # Count low battery
+                if vehicle.config.current_soc < 0.25:
+                    low_battery_count += 1
         
-        # Debug output if there are charging vehicles
-        if actual_charging > 0:
-            print(f"[DEBUG] Charging vehicles: {', '.join(charging_vehicles)}")
-        if actual_queued > 0:
-            print(f"[DEBUG] Queued vehicles: {', '.join(queued_vehicles)}")
+        # Also check station manager for actual port usage
+        station_charging_total = 0
+        if self.station_manager:
+            for station_id, station in self.station_manager.stations.items():
+                # Count occupied ports
+                occupied = len([p for p in station['ports'] if p.occupied_by is not None])
+                station_charging_total += occupied
         
-        # Update the stats
+        # Use the maximum of both counts (for accuracy)
+        actual_charging = max(charging_count, station_charging_total)
+        
+        # Update main stats
         self.stats['vehicles_charging'] = actual_charging
-        self.stats['vehicles_queued'] = actual_queued
-        self.stats['vehicles_circling'] = actual_circling
-        self.stats['vehicles_stranded'] = actual_stranded
+        self.stats['vehicles_stranded'] = stranded_count
+        self.stats['vehicles_circling'] = circling_count
+        self.stats['vehicles_queued'] = 0  # No queue system
         
-        # Count active vehicles
+        # Get basic SUMO stats
         active_count = 0
         if self.running:
             try:
@@ -1431,23 +1952,12 @@ class ManhattanSUMOManager:
                 vehicle_ids = traci.vehicle.getIDList()
                 active_count = len(vehicle_ids)
                 
-                # Also count EVs specifically
+                # Count EVs
                 ev_count = sum(1 for v in self.vehicles.values() if v.config.is_ev)
                 self.stats['ev_vehicles'] = ev_count
                 
-            except:
-                active_count = len(self.vehicles)
-        
-        self.stats['active_vehicles'] = active_count
-        
-        # Calculate other statistics if SUMO is running
-        if self.running:
-            try:
-                import traci
-                vehicle_ids = traci.vehicle.getIDList()
-                
+                # Get speeds and distances
                 if vehicle_ids:
-                    # Average speed
                     speeds = []
                     total_distance = 0
                     total_wait = 0
@@ -1463,47 +1973,139 @@ class ManhattanSUMOManager:
                     self.stats['avg_speed_mps'] = sum(speeds) / len(speeds) if speeds else 0
                     self.stats['total_distance_km'] = total_distance / 1000
                     self.stats['total_wait_time'] = total_wait
-                    
-                    # Calculate total energy consumed by EVs
-                    total_energy = 0
-                    for vehicle in self.vehicles.values():
-                        if vehicle.config.is_ev:
-                            # Energy used = capacity * (1 - current_soc)
-                            energy_used = vehicle.config.battery_capacity_kwh * (1.0 - vehicle.config.current_soc)
-                            total_energy += energy_used
-                    
-                    self.stats['total_energy_consumed_kwh'] = total_energy
+                
+                # Calculate energy consumed
+                total_energy = 0
+                for vehicle in self.vehicles.values():
+                    if vehicle.config.is_ev:
+                        energy_used = vehicle.config.battery_capacity_kwh * (1.0 - vehicle.config.current_soc)
+                        total_energy += energy_used
+                
+                self.stats['total_energy_consumed_kwh'] = total_energy
+                
             except Exception as e:
-                print(f"[DEBUG] Error calculating stats: {e}")
+                pass
         
-        # Ensure all required keys exist with default values
-        required_keys = [
-            'total_vehicles', 'ev_vehicles', 'active_vehicles',
-            'vehicles_charging', 'vehicles_queued', 'vehicles_circling', 
-            'vehicles_stranded', 'avg_speed_mps', 'total_distance_km',
-            'total_wait_time', 'total_energy_consumed_kwh'
-        ]
+        self.stats['active_vehicles'] = active_count
         
-        for key in required_keys:
-            if key not in self.stats:
-                self.stats[key] = 0
-        
-        # Print summary if vehicles are charging
-        if actual_charging > 0 or actual_queued > 0:
-            print(f"[STATS] Active: {active_count}, Charging: {actual_charging}, Queued: {actual_queued}, Circling: {actual_circling}, Stranded: {actual_stranded}")
+        # Print status if EVs are charging or need charge
+        if actual_charging > 0 or low_battery_count > 0:
+            print(f"\n📊 EV STATUS:")
+            print(f"  Charging: {actual_charging}/20 max per station")
+            print(f"  Circling: {circling_count}")
+            print(f"  Stranded: {stranded_count}")
+            print(f"  Need charge (<25%): {low_battery_count}")
+            
+            # Show which stations are being used
+            if self.station_manager:
+                for station_id, station in self.station_manager.stations.items():
+                    occupied = len([p for p in station['ports'] if p.occupied_by is not None])
+                    if occupied > 0:
+                        station_name = self.integrated_system.ev_stations[station_id]['name']
+                        print(f"  {station_name}: {occupied}/20 slots")
         
         return self.stats.copy()
+    
+    def debug_charging_status(self):
+        """Debug method to show what's happening with charging"""
+        
+        import traci
+        
+        if not self.running:
+            return
+        
+        print("\n" + "="*50)
+        print("CHARGING DEBUG STATUS")
+        print("="*50)
+        
+        # Check all EVs
+        ev_count = 0
+        charging_vehicles = []
+        low_battery_vehicles = []
+        
+        for vehicle in self.vehicles.values():
+            if vehicle.config.is_ev:
+                ev_count += 1
+                
+                # Get vehicle info
+                if vehicle.id in traci.vehicle.getIDList():
+                    edge = traci.vehicle.getRoadID(vehicle.id)
+                    speed = traci.vehicle.getSpeed(vehicle.id)
+                    
+                    status = "UNKNOWN"
+                    if hasattr(vehicle, 'is_charging') and vehicle.is_charging:
+                        status = "CHARGING"
+                        charging_vehicles.append(f"{vehicle.id} @ {edge}")
+                    elif hasattr(vehicle, 'is_stranded') and vehicle.is_stranded:
+                        status = "STRANDED"
+                    elif vehicle.config.current_soc < 0.25:
+                        status = "LOW BATTERY"
+                        low_battery_vehicles.append(f"{vehicle.id} ({vehicle.config.current_soc:.0%})")
+                    else:
+                        status = "DRIVING"
+                    
+                    if status in ["CHARGING", "LOW BATTERY", "STRANDED"]:
+                        print(f"  {vehicle.id}: {status} | SOC: {vehicle.config.current_soc:.0%} | Edge: {edge} | Speed: {speed:.1f}")
+        
+        # Check stations
+        print(f"\nSTATIONS:")
+        if self.station_manager:
+            for station_id, station in self.station_manager.stations.items():
+                if station['operational']:
+                    occupied = len([p for p in station['ports'] if p.occupied_by is not None])
+                    if occupied > 0 or station_id in [v.assigned_ev_station for v in self.vehicles.values() if hasattr(v, 'assigned_ev_station')]:
+                        print(f"  {station['name']}: {occupied}/20 ports occupied")
+                        # List vehicles at this station
+                        for port in station['ports']:
+                            if port.occupied_by:
+                                print(f"    - Port {port.port_id}: {port.occupied_by}")
+        
+        print(f"\nSUMMARY:")
+        print(f"  Total EVs: {ev_count}")
+        print(f"  Charging: {len(charging_vehicles)}")
+        print(f"  Low Battery: {len(low_battery_vehicles)}")
+        print("="*50)
+    
+    def force_test_charging(self):
+        """Force a vehicle to need charging for testing"""
+        
+        import traci
+        
+        if not self.running:
+            print("SUMO not running")
+            return
+        
+        # Find first EV
+        for vehicle in self.vehicles.values():
+            if vehicle.config.is_ev and vehicle.id in traci.vehicle.getIDList():
+                # Set battery to 10%
+                vehicle.config.current_soc = 0.10
+                print(f"🔋 Set {vehicle.id} battery to 10% for testing")
+                
+                # Set orange color
+                traci.vehicle.setColor(vehicle.id, (255, 165, 0, 255))
+                
+                # Clear any previous assignment
+                vehicle.assigned_ev_station = None
+                if hasattr(vehicle, 'is_charging'):
+                    vehicle.is_charging = False
+                
+                return
+        
+        print("No EV found to test")
+    
     def stop(self):
         """Stop SUMO simulation"""
         
         if self.running:
             try:
+                import traci
                 traci.close()
                 self.running = False
-                self.vehicles.clear()
                 print("SUMO stopped")
             except:
                 pass
+
 
 class Vehicle:
     """Individual vehicle tracking"""
@@ -1522,6 +2124,7 @@ class Vehicle:
         self.charging_at_station = None  # ADD THIS
         self.queue_position = 0
         self.assigned_ev_station = None
+        self.vehicles_blackout_speeds = {}  # Store original speeds during blackout
         self.destination = config.destination if config else None
         
     def __repr__(self):

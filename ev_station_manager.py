@@ -1,5 +1,6 @@
 """
-World-Class EV Charging Station Manager
+World-Class EV Charging Station Manager - FIXED VERSION
+Handles exactly 10 charging slots, no queue, vehicles circle if full
 """
 
 import heapq
@@ -7,20 +8,6 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 import numpy as np
-
-@dataclass
-class ChargingRequest:
-    """Charging request with priority"""
-    vehicle_id: str
-    battery_soc: float
-    arrival_time: datetime
-    priority: int = 0  # 0=normal, 1=low battery, 2=emergency
-    
-    def __lt__(self, other):
-        # Higher priority or lower battery gets precedence
-        if self.priority != other.priority:
-            return self.priority > other.priority
-        return self.battery_soc < other.battery_soc
 
 @dataclass
 class ChargingPort:
@@ -32,19 +19,18 @@ class ChargingPort:
     expected_finish: Optional[datetime] = None
 
 class EVStationManager:
-    """Manages all EV charging stations with intelligent routing"""
+    """Manages all EV charging stations with strict 10-slot limit"""
     
     def __init__(self, integrated_system, sumo_net):
         self.integrated_system = integrated_system
         self.sumo_net = sumo_net
         self.stations = {}
-        self.charging_queues = {}  # Priority queues per station
         self.vehicle_reservations = {}  # vehicle_id -> station_id
         
         self._initialize_stations()
     
     def _initialize_stations(self):
-        """Initialize stations on valid SUMO edges using actual station names"""
+        """Initialize stations with EXACTLY 10 ports each"""
         
         for ev_id, ev_station in self.integrated_system.ev_stations.items():
             # Find nearest valid edge
@@ -54,16 +40,11 @@ class EVStationManager:
             )
             
             if edge:
-                # Create charging ports based on actual station capacity
+                # Create EXACTLY 10 charging ports per station
                 ports = []
-                num_fast = min(2, ev_station['chargers'] // 4)  # 25% fast chargers max
-                
-                # Create 20 ports maximum per station
-                num_ports = min(20, ev_station['chargers'])
-                
-                for i in range(num_ports):
+                for i in range(10):  # FIXED: Exactly 10 ports
                     # Mix of DC fast and Level 2
-                    if i < num_fast:
+                    if i < 5:  # 25% fast chargers
                         power = 150  # DC fast charging
                     else:
                         power = 22   # Level 2
@@ -80,16 +61,15 @@ class EVStationManager:
                     'lat': ev_station['lat'],
                     'lon': ev_station['lon'],
                     'ports': ports,
-                    'queue': [],
-                    'operational': ev_station['operational'],  # Get from integrated system
+                    'vehicles_charging': [],  # List of vehicle IDs currently charging
+                    'operational': ev_station['operational'],
                     'substation': ev_station['substation'],
                     'total_power_kw': sum(p.power_kw for p in ports),
                     'current_load_kw': 0
                 }
                 
-                self.charging_queues[ev_id] = []
-                
-                print(f"✅ Initialized {ev_station['name']} on edge {edge} with {len(ports)} ports (Max 20 charging, 20 queue)")
+                print(f"✅ Initialized {ev_station['name']} on edge {edge} with EXACTLY 10 ports")
+    
     def _find_nearest_valid_edge(self, lat, lon):
         """Find nearest edge that can be routed to"""
         
@@ -124,135 +104,133 @@ class EVStationManager:
             print(f"Error finding edge: {e}")
             return None
     
-    def request_charging(self, vehicle_id, current_soc, current_edge, 
-                        current_position, is_emergency=False):
-        """
-        Smart charging station selection
-        
-        Returns:
-            (station_id, edge_id, estimated_wait_minutes, distance_km)
+    def can_charge_at_station(self, station_id: str) -> Tuple[bool, int]:
+        """Check if station has available charging slots
+        Returns: (can_charge, num_available_slots)
         """
         
-        print(f"\n🔍 Finding charging station for {vehicle_id} (SOC: {current_soc:.1%})")
+        if station_id not in self.stations:
+            return False, 0
         
-        best_option = None
-        min_total_time = float('inf')
-        stations_checked = []
+        station = self.stations[station_id]
+        
+        # Check if station has power
+        if not station['operational']:
+            return False, 0
+        
+        # Count occupied ports
+        occupied = len([p for p in station['ports'] if p.occupied_by is not None])
+        available = 10 - occupied  # FIXED: Always 10 total
+        
+        return available > 0, available
+    
+    def request_charging_simple(self, vehicle_id: str, station_id: str) -> bool:
+        """Simple charging request - returns True if can charge, False if need to circle"""
+        
+        if station_id not in self.stations:
+            return False
+        
+        station = self.stations[station_id]
+        
+        # Check if station is operational
+        if not station['operational']:
+            return False
+        
+        # Check if already charging
+        if vehicle_id in station['vehicles_charging']:
+            return True  # Already charging
+        
+        # Count current charging vehicles
+        charging_count = len(station['vehicles_charging'])
+        
+        # STRICT LIMIT: Only allow if under 10
+        if charging_count < 10:
+            # Find available port
+            for port in station['ports']:
+                if port.occupied_by is None:
+                    # Assign port
+                    port.occupied_by = vehicle_id
+                    port.charging_start = datetime.now()
+                    
+                    # Add to charging list
+                    if vehicle_id not in station['vehicles_charging']:
+                        station['vehicles_charging'].append(vehicle_id)
+                    
+                    # Update power load
+                    station['current_load_kw'] += port.power_kw
+                    
+                    # Store reservation
+                    self.vehicle_reservations[vehicle_id] = station_id
+                    
+                    print(f"✅ {vehicle_id} → Port at {station['name']} ({len(station['vehicles_charging'])}/10 occupied)")
+                    return True
+            
+        # Station full - vehicle must circle
+        print(f"❌ {station['name']} FULL (10/10) - {vehicle_id} must circle")
+        return False
+    
+    def update_charging(self, vehicle_id: str, current_soc: float) -> float:
+        """Update charging progress - returns energy delivered"""
         
         for station_id, station in self.stations.items():
-            # First check if station has power from integrated system
-            ev_station = self.integrated_system.ev_stations.get(station_id)
-            if not ev_station or not ev_station['operational']:
-                stations_checked.append(f"{station['name']} (NO POWER)")
-                continue
-            
-            # Double check substation
-            substation = self.integrated_system.substations.get(station['substation'])
-            if not substation or not substation['operational']:
-                stations_checked.append(f"{station['name']} (Substation DOWN)")
-                continue
-            
-            # CHECK CAPACITY - MAX 20 CHARGING, 20 IN QUEUE
-            current_charging = len([p for p in station['ports'] if p.occupied_by is not None])
-            current_queue = len(station.get('queue', []))
-            
-            # Skip if station is completely full
-            if current_charging >= 20 and current_queue >= 20:
-                stations_checked.append(f"{station['name']} (FULL: {current_charging}/20 charging, {current_queue}/20 queue)")
-                continue
-            
-            # Calculate travel distance
-            try:
-                # Simple distance for now
-                if not current_edge or current_edge.startswith(':'):
-                    continue
+            for port in station['ports']:
+                if port.occupied_by == vehicle_id:
+                    # Calculate charge delivered (FAST for simulation)
+                    if current_soc < 0.5:
+                        # Fast charging below 50%
+                        if port.power_kw >= 150:
+                            energy_kwh = 1.5  # Super fast for simulation
+                        else:
+                            energy_kwh = 0.4
+                    elif current_soc < 0.8:
+                        # Medium speed 50-80%
+                        if port.power_kw >= 150:
+                            energy_kwh = 0.8
+                        else:
+                            energy_kwh = 0.3
+                    else:
+                        # Slow above 80%
+                        energy_kwh = 0.2
                     
-                distance = 1.0  # Simplified - 1km default
-                travel_time_min = 2  # 2 minutes to get there
-                
-                # Calculate wait time
-                if current_charging < 20:
-                    wait_time_min = 0
-                    stations_checked.append(f"{station['name']} (AVAILABLE: {current_charging}/20 charging)")
-                else:
-                    position_in_queue = current_queue + 1
-                    wait_time_min = (position_in_queue * 5) / 10  # Estimate
-                    stations_checked.append(f"{station['name']} (QUEUE: {current_queue}/20)")
-                
-                # Total time
-                total_time = travel_time_min + wait_time_min + 5  # 5 min charge time
-                
-                if total_time < min_total_time:
-                    min_total_time = total_time
-                    best_option = (
-                        station_id,
-                        station['edge'],
-                        wait_time_min,
-                        distance
-                    )
+                    return energy_kwh
+        
+        return 0
+    
+    def finish_charging(self, vehicle_id: str) -> Optional[str]:
+        """Finish charging and free up port
+        Returns: station edge where vehicle was charging (for route continuation)
+        """
+        
+        for station_id, station in self.stations.items():
+            for port in station['ports']:
+                if port.occupied_by == vehicle_id:
+                    # Free the port
+                    station['current_load_kw'] -= port.power_kw
+                    port.occupied_by = None
+                    port.charging_start = None
+                    port.expected_finish = None
                     
-            except Exception as e:
-                stations_checked.append(f"{station['name']} (ERROR: {e})")
-                continue
+                    # Remove from charging list
+                    if vehicle_id in station['vehicles_charging']:
+                        station['vehicles_charging'].remove(vehicle_id)
+                    
+                    # Clear reservation
+                    if vehicle_id in self.vehicle_reservations:
+                        del self.vehicle_reservations[vehicle_id]
+                    
+                    print(f"🔋 {vehicle_id} finished charging at {station['name']} ({len(station['vehicles_charging'])}/10 now occupied)")
+                    
+                    # Return the edge where station is located
+                    return station['edge']
         
-        print(f"   Checked stations: {', '.join(stations_checked)}")
-        
-        if best_option:
-            station_id = best_option[0]
-            station = self.stations[station_id]
-            
-            # Add to queue/reservation
-            if station_id not in self.charging_queues:
-                self.charging_queues[station_id] = []
-                
-            request = ChargingRequest(
-                vehicle_id=vehicle_id,
-                battery_soc=current_soc,
-                arrival_time=datetime.now(),
-                priority=2 if is_emergency else (1 if current_soc < 0.2 else 0)
-            )
-            
-            heapq.heappush(self.charging_queues[station_id], request)
-            self.vehicle_reservations[vehicle_id] = station_id
-            
-            print(f"   ✅ {vehicle_id} → {station['name']} (Wait: {best_option[2]:.0f} min)")
-        else:
-            print(f"   ❌ {vehicle_id} NO AVAILABLE STATIONS!")
-        
-        return best_option
+        return None
     
-    def _calculate_route_distance(self, route):
-        """Calculate route distance in km"""
-        
-        total_distance = 0
-        for edge_id in route:
-            try:
-                edge = self.sumo_net.getEdge(edge_id)
-                total_distance += edge.getLength()
-            except:
-                total_distance += 100  # Default 100m per edge
-        
-        return total_distance / 1000  # Convert to km
-    
-    def _check_power_available(self, station):
-        """Check if station's substation is operational"""
-        
-        substation_name = station['substation']
-        
-        # Check in the integrated system's substations
-        if substation_name in self.integrated_system.substations:
-            is_operational = self.integrated_system.substations[substation_name]['operational']
-            if not is_operational:
-                print(f"      {substation_name} substation is DOWN")
-            return is_operational
-        
-        # If substation not found, assume it's operational
-        print(f"      Warning: Substation {substation_name} not found, assuming operational")
-        return True
-    def handle_blackout(self, substation_name):
+    def handle_blackout(self, substation_name: str) -> List[str]:
         """Handle substation blackout - mark stations as offline"""
         
         affected_stations = []
+        released_vehicles = []
+        
         for station_id, station in self.stations.items():
             if station['substation'] == substation_name:
                 station['operational'] = False
@@ -262,22 +240,24 @@ class EVStationManager:
                 if station_id in self.integrated_system.ev_stations:
                     self.integrated_system.ev_stations[station_id]['operational'] = False
                 
-                # Clear any charging vehicles
+                # Release all charging vehicles
                 for port in station['ports']:
                     if port.occupied_by:
-                        # Force stop charging
-                        self.finish_charging(port.occupied_by)
+                        released_vehicles.append(port.occupied_by)
+                        # Clear port
+                        port.occupied_by = None
+                        port.charging_start = None
                 
-                # Clear queue
-                if 'queue' in station:
-                    station['queue'].clear()
+                # Clear charging list
+                station['vehicles_charging'].clear()
+                station['current_load_kw'] = 0
         
         if affected_stations:
-            print(f"⚡ BLACKOUT: {', '.join(affected_stations)} offline!")
+            print(f"⚡ BLACKOUT: {', '.join(affected_stations)} offline! {len(released_vehicles)} vehicles interrupted")
         
-        return affected_stations
-
-    def restore_power(self, substation_name):
+        return released_vehicles
+    
+    def restore_power(self, substation_name: str) -> List[str]:
         """Restore power to stations"""
         
         restored_stations = []
@@ -295,98 +275,7 @@ class EVStationManager:
         
         return restored_stations
     
-    def restore_power(self, substation_name):
-        """Restore power to stations"""
-        
-        restored_stations = []
-        for station_id, station in self.stations.items():
-            if station['substation'] == substation_name:
-                station['operational'] = True
-                restored_stations.append(station['name'])
-        
-        if restored_stations:
-            print(f"✅ POWER RESTORED: {', '.join(restored_stations)} back online!")
-        
-        return restored_stations        
-    
-    def start_charging(self, vehicle_id, station_id):
-        """Start charging a vehicle"""
-        
-        if station_id not in self.stations:
-            return False
-        
-        station = self.stations[station_id]
-        
-        # Find available port
-        for port in station['ports']:
-            if port.occupied_by is None:
-                port.occupied_by = vehicle_id
-                port.charging_start = datetime.now()
-                
-                # Estimate finish time (simplified)
-                port.expected_finish = port.charging_start + timedelta(minutes=20)
-                
-                # Update power load
-                station['current_load_kw'] += port.power_kw
-                
-                return True
-        
-        return False
-    
-    def update_charging(self, vehicle_id, current_soc):
-            """Update charging progress - FASTER for simulation"""
-            
-            for station in self.stations.values():
-                for port in station['ports']:
-                    if port.occupied_by == vehicle_id:
-                        # Calculate charge delivered
-                        if port.charging_start:
-                            # SIMULATION SPEED: Much faster charging
-                            # DC Fast: 150kW = ~2% per step at simulation speed
-                            # Level 2: 22kW = ~0.5% per step at simulation speed
-                            
-                            if current_soc < 0.5:
-                                # Fast charging below 50%
-                                if port.power_kw >= 150:
-                                    energy_kwh = 1.5  # Super fast for simulation
-                                else:
-                                    energy_kwh = 0.4
-                            elif current_soc < 0.8:
-                                # Medium speed 50-80%
-                                if port.power_kw >= 150:
-                                    energy_kwh = 0.8
-                                else:
-                                    energy_kwh = 0.3
-                            else:
-                                # Slow above 80%
-                                energy_kwh = 0.2
-                            
-                            return energy_kwh
-            
-            return 0
-    
-    def finish_charging(self, vehicle_id):
-        """Finish charging and free up port"""
-        
-        for station in self.stations.values():
-            for port in station['ports']:
-                if port.occupied_by == vehicle_id:
-                    # Free the port
-                    station['current_load_kw'] -= port.power_kw
-                    port.occupied_by = None
-                    port.charging_start = None
-                    port.expected_finish = None
-                    
-                    # Process queue
-                    if station['queue']:
-                        next_vehicle = station['queue'].pop(0)
-                        self.start_charging(next_vehicle, station['id'])
-                    
-                    return True
-        
-        return False
-    
-    def get_station_status(self, station_id):
+    def get_station_status(self, station_id: str) -> Dict:
         """Get detailed station status"""
         
         if station_id not in self.stations:
@@ -394,12 +283,42 @@ class EVStationManager:
         
         station = self.stations[station_id]
         
+        occupied_ports = sum(1 for p in station['ports'] if p.occupied_by is not None)
+        
         return {
             'operational': station['operational'],
-            'total_ports': len(station['ports']),
-            'available_ports': sum(1 for p in station['ports'] if p.occupied_by is None),
-            'queue_length': len(station['queue']),
+            'total_ports': 10,  # Always 10
+            'occupied_ports': occupied_ports,
+            'available_ports': 10 - occupied_ports,
+            'vehicles_charging': len(station['vehicles_charging']),
             'current_load_kw': station['current_load_kw'],
             'max_load_kw': station['total_power_kw'],
-            'charging_vehicles': [p.occupied_by for p in station['ports'] if p.occupied_by]
+            'charging_vehicles': station['vehicles_charging'].copy()
         }
+    
+    def find_nearest_available_station(self, current_edge: str, current_soc: float) -> Optional[Tuple[str, str, int]]:
+        """Find nearest station with available slots
+        Returns: (station_id, station_edge, distance) or None
+        """
+        
+        best_station = None
+        min_distance = float('inf')
+        
+        for station_id, station in self.stations.items():
+            # Skip non-operational stations
+            if not station['operational']:
+                continue
+            
+            # Check availability
+            occupied = len(station['vehicles_charging'])
+            if occupied >= 10:  # Station full
+                continue
+            
+            # Simple distance estimate (you could use actual routing here)
+            try:
+                # For now, just return first available station
+                return station_id, station['edge'], 1
+            except:
+                pass
+        
+        return None
