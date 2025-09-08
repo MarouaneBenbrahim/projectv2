@@ -1,0 +1,9 @@
+Flask==2.3.3
+Flask-Cors==4.0.1
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.4.2
+pypsa==0.26.3
+python-dotenv==1.0.1
+openai==1.40.0
+

@@ -11,12 +11,25 @@ import time
 from datetime import datetime
 import traceback
 import random
+import os
+
+try:
+    from dotenv import load_dotenv
+except Exception:
+    def load_dotenv(*args, **kwargs):
+        return False
 
 # Import our systems
 from core.power_system import ManhattanPowerGrid
 from integrated_backend import ManhattanIntegratedSystem
 from core.sumo_manager import ManhattanSUMOManager, SimulationScenario
+from ml_engine import MLPowerGridEngine
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
 
+load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
@@ -38,11 +51,54 @@ integrated_system = ManhattanIntegratedSystem(power_grid)
 print("Initializing SUMO vehicle manager...")
 sumo_manager = ManhattanSUMOManager(integrated_system)
 
+# Initialize ML Engine
+ml_engine = MLPowerGridEngine(integrated_system=integrated_system, power_grid=power_grid)
+
+# Initialize OpenAI client (optional if key provided)
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if (OPENAI_API_KEY and OpenAI) else None
+
+# Optional: cache of SUMO edge shapes (lon/lat) for road-locked rendering
+EDGE_SHAPES: dict = {}
+
+def preload_edge_shapes(max_edges: int | None = None) -> int:
+    """Preload and cache SUMO edge shapes into EDGE_SHAPES using traci.
+    Returns number of edges cached. Requires SUMO to be running.
+    """
+    try:
+        import traci
+    except Exception:
+        return 0
+    if not (system_state.get('sumo_running') and getattr(sumo_manager, 'running', False)):
+        return 0
+    count = 0
+    try:
+        edge_ids = [e for e in traci.edge.getIDList() if not e.startswith(':')]
+        if max_edges is not None:
+            edge_ids = edge_ids[:max_edges]
+        for edge_id in edge_ids:
+            if edge_id in EDGE_SHAPES:
+                continue
+            try:
+                shape_xy = traci.edge.getShape(edge_id)
+                edge_shape = []
+                for sx, sy in shape_xy:
+                    slon, slat = traci.simulation.convertGeo(sx, sy)
+                    edge_shape.append([slon, slat])
+                EDGE_SHAPES[edge_id] = {'xy': shape_xy, 'lonlat': edge_shape}
+                count += 1
+            except Exception:
+                # Skip edges that fail shape retrieval
+                continue
+    except Exception:
+        return count
+    return count
+
 # System state
 system_state = {
     'running': True,
     'sumo_running': False,
-    'simulation_speed': 10.0,
+    'simulation_speed': 1.0,
     'current_time': 0,
     'scenario': SimulationScenario.MIDDAY
 }
@@ -259,6 +315,58 @@ def get_network_state():
                 if vehicle.id in traci.vehicle.getIDList():
                     x, y = traci.vehicle.getPosition(vehicle.id)
                     lon, lat = traci.simulation.convertGeo(x, y)
+                    # Extended kinematics and path info
+                    edge_id = None
+                    lane_id = None
+                    lane_pos = None
+                    lane_len = None
+                    edge_shape = None
+                    try:
+                        edge_id = traci.vehicle.getRoadID(vehicle.id)
+                        lane_id = traci.vehicle.getLaneID(vehicle.id)
+                        lane_pos = traci.vehicle.getLanePosition(vehicle.id)
+                        if lane_id:
+                            lane_len = traci.lane.getLength(lane_id)
+                        if edge_id and not edge_id.startswith(':'):
+                            # Use cached shapes if available
+                            try:
+                                from __main__ import EDGE_SHAPES
+                            except:
+                                EDGE_SHAPES = {}
+                            if edge_id in EDGE_SHAPES:
+                                shape_xy = EDGE_SHAPES[edge_id]['xy']
+                                edge_shape = EDGE_SHAPES[edge_id]['lonlat']
+                            else:
+                                shape_xy = traci.edge.getShape(edge_id)
+                                edge_shape = []
+                                for sx, sy in shape_xy:
+                                    slon, slat = traci.simulation.convertGeo(sx, sy)
+                                    edge_shape.append([slon, slat])
+                                EDGE_SHAPES[edge_id] = {'xy': shape_xy, 'lonlat': edge_shape}
+                            # Nearest point on XY polyline to (x,y)
+                            best_d = 1e18
+                            snap_x = x
+                            snap_y = y
+                            for i in range(len(shape_xy)-1):
+                                x1, y1 = shape_xy[i]
+                                x2, y2 = shape_xy[i+1]
+                                dx = x2 - x1
+                                dy = y2 - y1
+                                L2 = dx*dx + dy*dy if dx*dx + dy*dy != 0 else 1e-9
+                                t = ((x - x1)*dx + (y - y1)*dy) / L2
+                                if t < 0:
+                                    px, py = x1, y1
+                                elif t > 1:
+                                    px, py = x2, y2
+                                else:
+                                    px, py = x1 + dx*t, y1 + dy*t
+                                d = ((x - px)**2 + (y - py)**2) ** 0.5
+                                if d < best_d:
+                                    best_d = d
+                                    snap_x, snap_y = px, py
+                            snap_lon, snap_lat = traci.simulation.convertGeo(snap_x, snap_y)
+                    except:
+                        pass
                     
                     # Track charging at stations
                     if hasattr(vehicle, 'is_charging') and vehicle.is_charging and vehicle.assigned_ev_station:
@@ -289,7 +397,14 @@ def get_network_state():
                         'distance_traveled': round(vehicle.distance_traveled, 1),
                         'waiting_time': round(vehicle.waiting_time, 1),
                         'destination': vehicle.destination,
-                        'assigned_station': vehicle.assigned_ev_station
+                        'assigned_station': vehicle.assigned_ev_station,
+                        'edge_id': edge_id,
+                        'lane_id': lane_id,
+                        'lane_pos': lane_pos,
+                        'lane_len': lane_len,
+                        'edge_shape': edge_shape,
+                        'snap_lon': locals().get('snap_lon'),
+                        'snap_lat': locals().get('snap_lat')
                     })
             except:
                 pass
@@ -329,6 +444,12 @@ def start_sumo():
             
             spawned = sumo_manager.spawn_vehicles(count, ev_percentage)
             
+            # Preload edge shapes for road snapping (limit for faster start if needed)
+            try:
+                cached = preload_edge_shapes()
+                print(f"Preloaded {cached} SUMO edge shapes")
+            except Exception as e:
+                print(f"Edge preload skipped: {e}")
             return jsonify({
                 'success': True,
                 'message': f'SUMO started with {spawned} vehicles',
@@ -412,31 +533,18 @@ def stop_sumo():
 
 @app.route('/api/sumo/scenario', methods=['POST'])
 def set_scenario():
-    """Change simulation scenario (rush hour, night, etc.)"""
+    """Scenario control minimized per request. Only EV rush supported."""
     data = request.json or {}
-    scenario_name = data.get('scenario', 'MIDDAY')
+    scenario_name = data.get('scenario', 'EV_RUSH')
     
-    try:
-        scenario = SimulationScenario[scenario_name]
-        system_state['scenario'] = scenario
-        sumo_manager.current_scenario = scenario
-        
-        # Adjust spawning patterns based on scenario
-        if system_state['sumo_running']:
-            if scenario == SimulationScenario.MORNING_RUSH:
-                # Heavy traffic, more vehicles
-                sumo_manager.spawn_vehicles(20, 0.6)
-            elif scenario == SimulationScenario.EVENING_RUSH:
-                # Heavy traffic, EVs need charging
-                sumo_manager.spawn_vehicles(25, 0.7)
-            elif scenario == SimulationScenario.NIGHT:
-                # Light traffic
-                sumo_manager.spawn_vehicles(5, 0.8)
-        
-        return jsonify({'success': True, 'scenario': scenario_name})
-        
-    except KeyError:
-        return jsonify({'success': False, 'message': 'Invalid scenario'})
+    if not system_state['sumo_running']:
+        return jsonify({'success': False, 'message': 'SUMO not running'})
+    
+    if scenario_name == 'EV_RUSH':
+        spawned = sumo_manager.spawn_vehicles(30, 0.9)
+        return jsonify({'success': True, 'scenario': 'EV_RUSH', 'spawned': spawned})
+    
+    return jsonify({'success': False, 'message': 'Only EV_RUSH is supported now'})
 
 @app.route('/api/simulation/speed', methods=['POST'])
 def set_simulation_speed():
@@ -454,14 +562,10 @@ def fail_substation(substation):
     impact = integrated_system.simulate_substation_failure(substation)
     power_grid.trigger_failure('substation', substation)
     
-        # Update SUMO traffic lights if running
     # Update SUMO traffic lights if running
     if system_state['sumo_running'] and sumo_manager.running:
-        # Update traffic lights - they go to RED during blackout
+        # Update traffic lights - they go to YELLOW during blackout, not RED
         sumo_manager.update_traffic_lights()
-        
-        # Handle blackout traffic behavior (slow down vehicles)
-        sumo_manager.handle_blackout_traffic([substation])
         
         # Handle blackout for traffic lights specifically
         if hasattr(sumo_manager, 'handle_blackout_traffic_lights'):
@@ -502,8 +606,6 @@ def restore_substation(substation):
         # Update SUMO traffic lights if running
         if system_state['sumo_running'] and sumo_manager.running:
             sumo_manager.update_traffic_lights()
-            # Restore normal traffic speeds
-            sumo_manager.restore_normal_traffic([substation])
             
             # RESTORE EV STATION STATUS
             for ev_id, ev_station in integrated_system.ev_stations.items():
@@ -589,6 +691,156 @@ def get_status():
     }
     
     return jsonify(power_status)
+
+# ==========================
+# ML API ENDPOINTS
+# ==========================
+
+@app.route('/api/ml/dashboard')
+def ml_dashboard():
+    try:
+        data = ml_engine.get_ml_dashboard_data()
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ml/predict/demand')
+def ml_predict_demand():
+    try:
+        hours = int(request.args.get('hours', 6))
+        preds = ml_engine.predict_power_demand(next_hours=hours)
+        return jsonify(preds)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ml/optimize')
+def ml_optimize():
+    try:
+        result = ml_engine.optimize_power_distribution()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ml/baselines')
+def ml_baselines():
+    try:
+        baseline = {}
+        if hasattr(ml_engine, 'compare_with_baselines'):
+            baseline = ml_engine.compare_with_baselines()
+        return jsonify(baseline)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ml/feature_importance')
+def ml_feature_importance():
+    try:
+        demand_labels = ['hour', 'day_of_week', 'temperature', 'total_evs', 'current_load']
+        charging_labels = ['hour', 'station_id', 'queue_length', 'avg_soc']
+        imp = {
+            'demand': {
+                'labels': demand_labels,
+                'importances': []
+            },
+            'charging': {
+                'labels': charging_labels,
+                'importances': []
+            }
+        }
+        if hasattr(ml_engine.demand_predictor, 'feature_importances_'):
+            imp['demand']['importances'] = [float(x) for x in ml_engine.demand_predictor.feature_importances_]
+        if hasattr(ml_engine.charging_predictor, 'feature_importances_'):
+            imp['charging']['importances'] = [float(x) for x in ml_engine.charging_predictor.feature_importances_]
+        return jsonify(imp)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/advice', methods=['GET', 'POST'])
+def ai_advice():
+    """Generate AI advice that explains ML insights and next actions."""
+    if not openai_client:
+        return jsonify({'error': 'OPENAI_API_KEY not configured'}), 400
+    try:
+        data = ml_engine.get_ml_dashboard_data()
+        # Optional custom question
+        q = request.args.get('q')
+        if request.method == 'POST':
+            body = request.get_json(silent=True) or {}
+            q = q or body.get('question')
+        # Build concise context for the model
+        context = {
+            'time': data.get('timestamp'),
+            'metrics': data.get('metrics', {}),
+            'top_patterns': data.get('patterns', {}).get('top_patterns', []),
+            'anomalies': data.get('anomalies', []),
+            'optimization': data.get('optimization', {}),
+        }
+        if q:
+            prompt = (
+                "You are a Manhattan power grid assistant. Answer the operator's question "
+                "specifically and concisely, then list 2-3 actionable steps. "
+                "Context (JSON) is provided.\n"
+                f"Question: {q}\n"
+                f"Context: {json.dumps(context, default=str)}"
+            )
+        else:
+            prompt = (
+                "You are a Manhattan power grid assistant. Summarize the current situation "
+                "in 3 bullet points, then list 3 prioritized operator actions with reasons. "
+                "Be concise and specific. Context (JSON):\n" + json.dumps(context, default=str)
+            )
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a helpful power grid assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=350,
+        )
+        content = resp.choices[0].message.content
+        return jsonify({'advice': content})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ai/report')
+def ai_report():
+    if not openai_client:
+        return jsonify({'error': 'OPENAI_API_KEY not configured'}), 400
+    try:
+        data = ml_engine.get_ml_dashboard_data()
+        # Gather quick grid snapshot
+        snapshot = {
+            'time': data.get('timestamp'),
+            'metrics': data.get('metrics', {}),
+            'anomalies': data.get('anomalies', []),
+            'optimization': data.get('optimization', {}),
+            'substations': [
+                {
+                    'name': sname,
+                    'operational': sdata.get('operational', True),
+                    'load_mw': sdata.get('load_mw')
+                } for sname, sdata in getattr(ml_engine.integrated_system, 'substations', {}).items()
+            ]
+        }
+        prompt = (
+            "Create a concise executive report in markdown with sections: "
+            "1) Summary (3-5 bullets), 2) Current Risks, 3) ML Insights (accuracy, patterns, anomalies), "
+            "4) Optimization Recommendations, 5) Next Steps. Keep under 350 words. Context JSON follows.\n" +
+            json.dumps(snapshot, default=str)
+        )
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a concise executive assistant for power grid ops."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=500,
+        )
+        content = resp.choices[0].message.content
+        return jsonify({'report': content})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # HTML Template - Complete with all features
 HTML_COMPLETE_TEMPLATE = '''
@@ -1031,6 +1283,24 @@ HTML_COMPLETE_TEMPLATE = '''
     </style>
 </head>
 <body>
+    <!-- Chatbot launcher -->
+    <div id="chatbot-launcher" class="chatbot-launcher" title="Ask AI" onclick="toggleChatbot()">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2C6.48 2 2 5.58 2 10c0 2.39 1.31 4.53 3.4 6.01-.14.52-.51 1.89-.59 2.24-.09.37.13.73.5.82.26.06.52-.03.7-.21.28-.27 1.25-1.2 1.77-1.7.79.22 1.63.34 2.52.34 5.52 0 10-3.58 10-8s-4.48-8-10-8Z" fill="#ffffff"/>
+        </svg>
+    </div>
+    <!-- Chatbot window -->
+    <div id="chatbot-window" class="chatbot-window">
+        <div class="chat-header">
+            <div class="chat-title"><span class="chat-avatar"></span> Manhattan AI Assistant</div>
+            <button class="chat-close" onclick="toggleChatbot()">Close</button>
+        </div>
+        <div id="chat-messages" class="chat-messages"></div>
+        <div class="chat-input">
+            <input id="chat-input" placeholder="Ask about outages, demand, EVs, traffic…"/>
+            <button class="btn btn-secondary chat-send" onclick="sendChatMessage()">Send</button>
+        </div>
+    </div>
     <div id="map"></div>
     
     <!-- Control Panel -->
@@ -1091,40 +1361,6 @@ HTML_COMPLETE_TEMPLATE = '''
                     <div class="vehicle-stat-value" id="ev-count">0</div>
                     <div class="vehicle-stat-label">EVs</div>
                 </div>
-                <div class="vehicle-stat">
-                    <div class="vehicle-stat-value" id="charging-count" style="color: #00ffff;">0</div>
-                    <div class="vehicle-stat-label">Charging/20</div>
-                </div>
-            </div>
-
-            <div class="vehicle-stats">
-                <div class="vehicle-stat">
-                    <div class="vehicle-stat-value" id="queued-count" style="color: #ffff00;">0</div>
-                    <div class="vehicle-stat-label">Queued/20</div>
-                </div>
-                <div class="vehicle-stat">
-                    <div class="vehicle-stat-value" id="circling-count" style="color: #ff8c00;">0</div>
-                    <div class="vehicle-stat-label">Circling</div>
-                </div>
-                <div class="vehicle-stat">
-                    <div class="vehicle-stat-value" id="stranded-count" style="color: #ff00ff;">0</div>
-                    <div class="vehicle-stat-label">Stranded</div>
-                </div>
-            </div>
-            
-            <div class="vehicle-stats">
-                <div class="vehicle-stat">
-                    <div class="vehicle-stat-value" id="avg-speed">0</div>
-                    <div class="vehicle-stat-label">km/h</div>
-                </div>
-                <div class="vehicle-stat">
-                    <div class="vehicle-stat-value" id="energy-consumed">0</div>
-                    <div class="vehicle-stat-label">kWh Used</div>
-                </div>
-                <div class="vehicle-stat">
-                    <div class="vehicle-stat-value" id="wait-time">0</div>
-                    <div class="vehicle-stat-label">Wait (s)</div>
-                </div>
             </div>
             
             <div class="btn-group">
@@ -1134,28 +1370,13 @@ HTML_COMPLETE_TEMPLATE = '''
                 <button class="btn btn-danger" onclick="stopSUMO()" id="stop-sumo-btn" disabled>
                     ⏹️ Stop Vehicles
                 </button>
-                <button class="btn btn-secondary" onclick="spawnVehicles(5)" id="spawn-btn" disabled>
-                    ➕ Add 5 Cars
-                </button>
                 <button class="btn btn-secondary" onclick="spawnVehicles(10)" id="spawn10-btn" disabled>
-                    ➕ Add 10 Cars
-                </button>
-                <button class="btn btn-danger" onclick="testEVRush()" id="test-rush-btn" disabled>
-                    🔋 Test EV Rush
+                    ➕ Add Cars
                 </button>
             </div>
         </div>
         
-        <!-- Scenario Selector -->
-        <div class="scenario-selector">
-            <div class="section-title">📅 Traffic Scenario</div>
-            <div class="scenario-buttons">
-                <button class="scenario-btn" onclick="setScenario('NIGHT')">🌙 Night</button>
-                <button class="scenario-btn" onclick="setScenario('MORNING_RUSH')">🌅 Rush AM</button>
-                <button class="scenario-btn active" onclick="setScenario('MIDDAY')">☀️ Midday</button>
-                <button class="scenario-btn" onclick="setScenario('EVENING_RUSH')">🌇 Rush PM</button>
-            </div>
-        </div>
+        <!-- Scenario Selector removed per request -->
         
         <!-- Speed Control -->
         <div class="speed-control">
@@ -1165,14 +1386,49 @@ HTML_COMPLETE_TEMPLATE = '''
                    onchange="setSimulationSpeed(this.value)">
         </div>
         
+        <!-- Machine Learning Analytics -->
+        <div class="ml-dashboard" style="margin: 20px 0; padding: 18px; background: linear-gradient(145deg, rgba(30, 20, 50, 0.95), rgba(20, 15, 35, 0.95)); border-radius: 16px; border: 1px solid rgba(138, 43, 226, 0.35); box-shadow: 0 18px 50px rgba(0,0,0,0.6);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+                <h3 style="font-size: 16px; color: #c8a2ff; letter-spacing: .2px;">🧠 Machine Learning Analytics</h3>
+                <div style="font-size:11px;color:rgba(255,255,255,0.6);">Updated <span id="ml-updated">–</span></div>
+            </div>
+            <div class="ml-metrics" style="display:grid;grid-template-columns: repeat(4, 1fr);gap:10px;margin-bottom:12px;">
+                <div class="ml-stat" style="padding:10px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;background:rgba(255,255,255,0.04);">
+                    <div style="font-size: 22px; font-weight: 800; color: #c8a2ff;" id="ml-accuracy">–</div>
+                    <div style="font-size: 11px; color: rgba(255,255,255,0.6);">Prediction Accuracy</div>
+                </div>
+                <div class="ml-stat" style="padding:10px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;background:rgba(255,255,255,0.04);">
+                    <div style="font-size: 22px; font-weight: 800; color: #00ff88;" id="ml-patterns">0</div>
+                    <div style="font-size: 11px; color: rgba(255,255,255,0.6);">Patterns Found</div>
+                </div>
+                <div class="ml-stat" style="padding:10px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;background:rgba(255,255,255,0.04);">
+                    <div style="font-size: 22px; font-weight: 800; color: #ff6b6b;" id="ml-anomalies">0</div>
+                    <div style="font-size: 11px; color: rgba(255,255,255,0.6);">Anomalies</div>
+                </div>
+                <div class="ml-stat" style="padding:10px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;background:rgba(255,255,255,0.04);">
+                    <div style="font-size: 22px; font-weight: 800; color: #4ecdc4;" id="ml-savings">0%</div>
+                    <div style="font-size: 11px; color: rgba(255,255,255,0.6);">Cost Savings</div>
+                </div>
+            </div>
+            <div class="btn-group" style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn btn-secondary" onclick="showMLPredictions()">📈 Show Predictions</button>
+                <button class="btn btn-secondary" onclick="runMLOptimization()">⚡ Optimize Grid</button>
+                <button class="btn btn-secondary" onclick="askAIAdvice()">🤖 Ask AI</button>
+                <button class="btn btn-secondary" onclick="showBaselines()">📐 Baselines</button>
+                <button class="btn btn-secondary" onclick="downloadExecutiveReport()">📄 Executive Report</button>
+            </div>
+            <div id="ml-results" style="margin-top: 12px; padding: 10px; background: rgba(0,0,0,0.35); border-radius: 10px; font-size: 12px; display: none; border:1px solid rgba(255,255,255,0.06);"></div>
+        </div>
+        
         <!-- Substation Controls -->
         <div class="section-title">🏭 Substation Control</div>
         <div class="substation-grid" id="substation-controls"></div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
+            <button class="btn btn-danger" onclick="triggerBlackout()">⚠️ BLACKOUT</button>
+            <button class="btn btn-primary" onclick="restoreAll()">🔧 Restore All</button>
+        </div>
         
         <!-- Action Buttons -->
-        <button class="btn btn-primary" style="width: 100%; margin-top: 16px;" onclick="restoreAll()">
-            🔧 Restore All Systems
-        </button>
         
         <!-- Layer Controls -->
         <div class="layer-controls">
@@ -1240,6 +1496,15 @@ HTML_COMPLETE_TEMPLATE = '''
         </div>
     </div>
     
+    <!-- Global Red Alert Overlay -->
+    <div id="blackout-alert" style="position: fixed; inset: 0; background: rgba(120,0,0,0.92); color: #fff; display: none; align-items: center; justify-content: center; z-index: 2000;">
+        <div style="text-align: center; max-width: 700px; padding: 24px; border: 2px solid rgba(255,255,255,0.3); border-radius: 12px;">
+            <div style="font-size: 38px; font-weight: 800; letter-spacing: 1px; margin-bottom: 8px;">🚨 CITYWIDE BLACKOUT</div>
+            <div id="blackout-message" style="font-size: 22px; margin-bottom: 16px;">7 substations down • 1 operational (Midtown East)</div>
+            <button onclick="dismissBlackoutAlert()" class="btn btn-primary" style="font-size: 16px; padding: 10px 18px;">Dismiss</button>
+        </div>
+    </div>
+    
     <!-- Legend -->
     <div class="legend">
         <div class="legend-title">System Components</div>
@@ -1289,7 +1554,11 @@ HTML_COMPLETE_TEMPLATE = '''
         // State
         let networkState = null;
         let markers = [];
-        let vehicleMarkers = {};  // Keep for cleanup but won't use for new vehicles
+        let vehicleMarkers = {};  // Legacy markers
+        // Physics-like smoother: integrate velocity and apply small correction to target
+        let vehicleSnapshots = []; // keep last 2 snapshots
+        let displayStates = new Map(); // id -> {lon,lat,smSpeed,props,lastSeen}
+        let lastFrameTs = 0;
         let vehicleLayerInitialized = false;
         let evStationLayerInitialized = false;
         let layers = {
@@ -1299,6 +1568,8 @@ HTML_COMPLETE_TEMPLATE = '''
             secondary: true,
             ev: true
         };
+        let SMOOTH_MODE = true; // Enable fixed-lag interpolation for zero jumps
+        const LAG_MS = 250; // Render 250ms behind real-time to always have A/B samples
         let sumoRunning = false;
         let substationMarkers = {};
         let evStationMarkers = {};
@@ -1319,6 +1590,23 @@ HTML_COMPLETE_TEMPLATE = '''
             } catch (error) {
                 console.error('Error loading network state:', error);
             }
+        }
+        
+        function showBlackoutAlert(failedCount, operationalCount) {
+            const alertEl = document.getElementById('blackout-alert');
+            const msg = document.getElementById('blackout-message');
+            // Try to get the name of the online station (default Midtown East)
+            let onlineName = 'Midtown East';
+            if (networkState && networkState.substations) {
+                const online = networkState.substations.find(s => s.operational);
+                if (online) onlineName = online.name;
+            }
+            msg.textContent = `${failedCount} stations down • ${operationalCount} on (${onlineName})`;
+            alertEl.style.display = 'flex';
+        }
+        
+        function dismissBlackoutAlert() {
+            document.getElementById('blackout-alert').style.display = 'none';
         }
         async function testEVRush() {
             const response = await fetch('/api/test/ev_rush', {method: 'POST'});
@@ -1345,20 +1633,13 @@ HTML_COMPLETE_TEMPLATE = '''
             document.getElementById('black-count').textContent = stats.black_lights || 0;
             
             if (networkState.vehicle_stats) {
-                document.getElementById('active-vehicles').textContent = (networkState.vehicles || []).length;
-                document.getElementById('ev-count').textContent = networkState.vehicle_stats.ev_vehicles || 0;
-                document.getElementById('charging-count').textContent = networkState.vehicle_stats.vehicles_charging || 0;
-                document.getElementById('queued-count').textContent = networkState.vehicle_stats.vehicles_queued || 0;
-                document.getElementById('circling-count').textContent = networkState.vehicle_stats.vehicles_circling || 0;
-                document.getElementById('stranded-count').textContent = networkState.vehicle_stats.vehicles_stranded || 0;
-                document.getElementById('avg-speed').textContent = 
-                    Math.round((networkState.vehicle_stats.avg_speed_mps || 0) * 3.6);
-                document.getElementById('energy-consumed').textContent = 
-                    Math.round(networkState.vehicle_stats.total_energy_consumed_kwh || 0);
-                document.getElementById('wait-time').textContent = 
-                    Math.round(networkState.vehicle_stats.total_wait_time || 0);
-                
-                document.getElementById('vehicle-count').textContent = (networkState.vehicles || []).length;
+                const active = (networkState.vehicles || []).length;
+                const evs = networkState.vehicle_stats.ev_vehicles || 0;
+                document.getElementById('active-vehicles').textContent = active;
+                document.getElementById('ev-count').textContent = evs;
+
+                // Status bar quick stats
+                document.getElementById('vehicle-count').textContent = active;
                 document.getElementById('charging-stations').textContent = 
                  `${networkState.vehicle_stats.vehicles_charging || 0}/${networkState.vehicle_stats.vehicles_queued || 0}`;
             }
@@ -1656,7 +1937,7 @@ HTML_COMPLETE_TEMPLATE = '''
                 map.setLayoutProperty('vehicles-layer', 'visibility', layers.vehicles ? 'visible' : 'none');
             }
             
-            // Convert ALL vehicles to GeoJSON features - NO FILTERING!
+            // Convert ALL vehicles to GeoJSON features - include road info for snapping
             const features = networkState.vehicles.map(vehicle => ({
                 type: 'Feature',
                 geometry: {
@@ -1683,7 +1964,11 @@ HTML_COMPLETE_TEMPLATE = '''
                         vehicle.type === 'taxi' ? '#ffff00' :
                         '#6464ff',
                     angle: vehicle.angle || 0,
-                    edge: vehicle.edge || '',
+                    edge_id: vehicle.edge_id || '',
+                    lane_id: vehicle.lane_id || '',
+                    lane_pos: vehicle.lane_pos || 0,
+                    lane_len: vehicle.lane_len || 1,
+                    edge_shape: vehicle.edge_shape || null,
                     distance_traveled: vehicle.distance_traveled || 0,
                     waiting_time: vehicle.waiting_time || 0,
                     assigned_station: vehicle.assigned_station || ''
@@ -1693,11 +1978,98 @@ HTML_COMPLETE_TEMPLATE = '''
             // Update the source data
             const source = map.getSource('vehicles');
             if (source) {
-                source.setData({
-                    type: 'FeatureCollection',
-                    features: features
-                });
+                if (!SMOOTH_MODE) {
+                    // ORIGINAL RAW MOVEMENT (no smoothing)
+                    source.setData({ type:'FeatureCollection', features: features });
+                    // Clear smoothing state to avoid artifacts when toggling back
+                    vehicleSnapshots = [];
+                    displayStates.clear();
+                } else {
+                    // SMOOTHED MODE (uses snapshots/physics)
+                    const now = performance.now();
+                    const positions = {};
+                    // Helper: nearest point on polyline and arc-length
+                    const nearOnPoly = (lon, lat, poly) => {
+                        let segLens = new Array(poly.length-1);
+                        let total=0; for (let i=0;i<poly.length-1;i++){const dx=poly[i+1][0]-poly[i][0];const dy=poly[i+1][1]-poly[i][1];const L=Math.hypot(dx,dy);segLens[i]=L;total+=L;}
+                        let bestD=Infinity, acc=0, bestS=0, px=poly[0][0], py=poly[0][1];
+                        for (let i=0;i<segLens.length;i++){
+                            const x1=poly[i][0], y1=poly[i][1], x2=poly[i+1][0], y2=poly[i+1][1];
+                            const dx=x2-x1, dy=y2-y1; const L2=dx*dx+dy*dy || 1e-9;
+                            let t=((lon-x1)*dx+(lat-y1)*dy)/L2; t=Math.max(0,Math.min(1,t));
+                            const qx=x1+dx*t, qy=y1+dy*t; const d=Math.hypot(lon-qx, lat-qy);
+                            if (d<bestD){bestD=d; bestS=acc+segLens[i]*t; px=qx; py=qy;}
+                            acc+=segLens[i];
+                        }
+                        return {px,py,s:bestS,total};
+                    };
+                    features.forEach(f => {
+                        const props=f.properties; let lon=f.geometry.coordinates[0], lat=f.geometry.coordinates[1];
+                        let px=lon, py=lat, sDist=null, total=null; let edgeId=props.edge_id||'';
+                        if (props.edge_shape && props.edge_shape.length>=2){
+                            const res=nearOnPoly(lon,lat,props.edge_shape);
+                            px=res.px; py=res.py; sDist=res.s; total=res.total;
+                        }
+                        positions[props.id]={ lon:px, lat:py, props:{...props, edge_id:edgeId, sDist, sTotal:total, poly:props.edge_shape||null} };
+                    });
+                    vehicleSnapshots.push({ ts: now, positions });
+                    if (vehicleSnapshots.length > 2) vehicleSnapshots.shift();
+                    // Initialize draw on first snapshot
+                    if (vehicleSnapshots.length === 1) {
+                        // Draw snapped points initially
+                        const initFeatures = Object.values(positions).map(p=>({type:'Feature',geometry:{type:'Point',coordinates:[p.lon,p.lat]},properties:p.props}));
+                        source.setData({ type:'FeatureCollection', features: initFeatures });
+                    }
+                }
             }
+        }
+
+        // Smooth animation between network refreshes
+        function animateVehicles() {
+            requestAnimationFrame(animateVehicles);
+            const src = map.getSource('vehicles');
+            if (!src || vehicleSnapshots.length < 1 || !SMOOTH_MODE) return;
+            const now = performance.now();
+            lastFrameTs = now;
+            const playhead = now - LAG_MS;
+            const featuresOut = [];
+            // Find A,B snapshots bracketing playhead
+            let aIdx = 0; while (aIdx+1 < vehicleSnapshots.length && vehicleSnapshots[aIdx+1].ts <= playhead) aIdx++;
+            const bIdx = Math.min(aIdx+1, vehicleSnapshots.length-1);
+            const A = vehicleSnapshots[aIdx], B = vehicleSnapshots[bIdx];
+            const denom = Math.max(1, B.ts - A.ts);
+            const t = Math.min(1, Math.max(0, (playhead - A.ts) / denom));
+            // Interpolate positions; if same edge and have sDist, interpolate arc-length and map to polyline A.props.poly
+            const ids = new Set([...Object.keys(A.positions), ...Object.keys(B.positions)]);
+            ids.forEach(id => {
+                const pA = A.positions[id];
+                const pB = B.positions[id] || pA;
+                if (!pA && !pB) return;
+                let lon, lat, props = pB.props || pA.props;
+                if (pA.props && pB.props && pA.props.edge_id === pB.props.edge_id && pA.props.poly && pA.props.poly.length>=2 && typeof pA.props.sDist==='number' && typeof pB.props.sDist==='number'){
+                    // Interpolate along same polyline
+                    const sTotal = pA.props.sTotal || pB.props.sTotal || 0;
+                    const sInterp = (pA.props.sDist||0) + ((pB.props.sDist||0) - (pA.props.sDist||0)) * t;
+                    // Map arc-length to point on polyline
+                    const poly = pA.props.poly; // use A's poly
+                    // Precompute seg lengths
+                    let segLens = new Array(poly.length-1), total=0; for (let i=0;i<poly.length-1;i++){const dx=poly[i+1][0]-poly[i][0]; const dy=poly[i+1][1]-poly[i][1]; const L=Math.hypot(dx,dy); segLens[i]=L; total+=L;}
+                    let d = Math.max(0, Math.min(total, sInterp));
+                    lon = poly[0][0]; lat = poly[0][1];
+                    for (let i=0;i<segLens.length;i++){
+                        if (d <= segLens[i]) { const tt = segLens[i]? (d/segLens[i]) : 0; lon = poly[i][0] + (poly[i+1][0]-poly[i][0])*tt; lat = poly[i][1] + (poly[i+1][1]-poly[i][1])*tt; break; }
+                        else { d -= segLens[i]; lon = poly[i+1][0]; lat = poly[i+1][1]; }
+                    }
+                } else {
+                    // Fallback: linear between snapped lon/lat
+                    const ax = pA.lon, ay = pA.lat, bx = pB.lon, by = pB.lat;
+                    lon = ax + (bx - ax) * t; lat = ay + (by - ay) * t;
+                }
+                featuresOut.push({ type:'Feature', geometry:{ type:'Point', coordinates:[lon,lat] }, properties: props });
+            });
+            // Optionally drop vehicles not seen for a while
+            // (not needed in fixed-lag mode)
+            src.setData({ type:'FeatureCollection', features: featuresOut });
         }
         
         // Render EV stations using GeoJSON layer (FIXED - same as vehicles)
@@ -2042,9 +2414,7 @@ function renderEVStations() {
                 sumoRunning = true;
                 document.getElementById('start-sumo-btn').disabled = true;
                 document.getElementById('stop-sumo-btn').disabled = false;
-                document.getElementById('spawn-btn').disabled = false;
                 document.getElementById('spawn10-btn').disabled = false;
-                document.getElementById('test-rush-btn').disabled = false;
                 alert(result.message);
             } else {
                 alert('Failed to start SUMO: ' + result.message);
@@ -2059,7 +2429,6 @@ function renderEVStations() {
                 sumoRunning = false;
                 document.getElementById('start-sumo-btn').disabled = false;
                 document.getElementById('stop-sumo-btn').disabled = true;
-                document.getElementById('spawn-btn').disabled = true;
                 document.getElementById('spawn10-btn').disabled = true;
                 
                 // Clear vehicle data
@@ -2114,6 +2483,24 @@ function renderEVStations() {
             });
         }
         
+        async function triggerBlackout() {
+            try {
+                const subs = (networkState?.substations || []).map(s => s.name);
+                const total = subs.length;
+                // Show single alert immediately
+                showBlackoutAlert(total - 1, 1);
+                // Apply failures in background
+                for (const s of subs) {
+                    if (s !== 'Midtown East') {
+                        await fetch(`/api/fail/${encodeURIComponent(s)}`, {method: 'POST'});
+                    }
+                }
+                await loadNetworkState();
+            } catch (e) {
+                console.error('Blackout error', e);
+            }
+        }
+        
         async function toggleSubstation(name) {
             const sub = networkState.substations.find(s => s.name === name);
             
@@ -2151,11 +2538,200 @@ function renderEVStations() {
             // Load initial state
             loadNetworkState();
             
-            // Update every 500ms for smooth vehicle movement
-            setInterval(loadNetworkState, 500);
+            // Update every 200ms for maximum smoothness (higher CPU)
+            setInterval(loadNetworkState, 200);
             setInterval(updateTime, 1000);
             updateTime();
+            // Start smooth animation loop
+            animateVehicles();
         });
+
+        // Chatbot controls
+        function toggleChatbot() {
+            const launcher = document.getElementById('chatbot-launcher');
+            const win = document.getElementById('chatbot-window');
+            if (win.style.display === 'flex') {
+                win.style.display = 'none';
+                launcher.style.display = 'flex';
+            } else {
+                win.style.display = 'flex';
+                launcher.style.display = 'none';
+                // Load summary on open
+                const box = document.getElementById('chat-messages');
+                box.innerHTML = '<div class="msg ai">Loading summary…</div>';
+                fetch('/api/ai/advice').then(r=>r.json()).then(data=>{
+                    if (data.advice) {
+                        box.innerHTML = `<div class=\"msg ai\">${data.advice.replace(/\\n/g,'<br>')}</div>`;
+                    } else {
+                        box.innerHTML = `<div class=\"msg ai\" style=\"color:#f66;\">${data.error||'No response'}</div>`;
+                    }
+                }).catch(()=>{
+                    box.innerHTML = '<div class="msg ai" style="color:#f66;">AI request failed.</div>';
+                });
+            }
+        }
+        function sendChatMessage() {
+            const input = document.getElementById('chat-input');
+            const text = (input.value||'').trim();
+            if (!text) return;
+            const box = document.getElementById('chat-messages');
+            box.innerHTML += `<div class=\"msg user\"><strong>You:</strong> ${text}</div>`;
+            box.innerHTML += `<div class=\"typing\">AI is typing…</div>`;
+            const typingRef = box.querySelector('.typing');
+            input.value = '';
+            fetch('/api/ai/advice', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question:text})})
+              .then(r=>r.json()).then(data=>{
+                if (typingRef) typingRef.remove();
+                if (data.advice) {
+                    box.innerHTML += `<div class=\"msg ai\"><strong>AI:</strong> ${data.advice.replace(/\\n/g,'<br>')}</div>`;
+                } else {
+                    box.innerHTML += `<div class=\"msg ai\" style=\"color:#f66;\"><strong>AI:</strong> ${data.error||'No response'}</div>`;
+                }
+                box.scrollTop = box.scrollHeight;
+              }).catch(()=>{
+                if (typingRef) typingRef.remove();
+                box.innerHTML += '<div class="msg ai" style="color:#f66;"><strong>AI:</strong> Request failed</div>';
+              });
+        }
+
+        // ==========================
+        // ML DASHBOARD WIDGET
+        // ==========================
+        async function updateMLDashboard() {
+            try {
+                const response = await fetch('/api/ml/dashboard');
+                const data = await response.json();
+                const accEl = document.getElementById('ml-accuracy');
+                if (!accEl) return; // Widget not present
+                accEl.textContent = `${100 - (data.metrics.demand_mape || 5)}%`;
+                document.getElementById('ml-patterns').textContent = data.metrics.patterns_found || 0;
+                document.getElementById('ml-anomalies').textContent = data.anomalies ? data.anomalies.length : 0;
+                document.getElementById('ml-savings').textContent = `${data.metrics.optimization_savings || 0}%`;
+                document.getElementById('ml-updated').textContent = new Date(data.timestamp).toLocaleTimeString('en-US', {hour12:false});
+                if (data.anomalies && data.anomalies.length > 0) {
+                    const resultsDiv = document.getElementById('ml-results');
+                    if (resultsDiv) {
+                        resultsDiv.style.display = 'block';
+                        resultsDiv.innerHTML = '<strong>⚠️ Anomalies Detected:</strong><br>' +
+                            data.anomalies.map(a => `${a.type}: ${a.description}`).join('<br>');
+                    }
+                }
+            } catch (e) {
+                console.error('ML Dashboard error:', e);
+            }
+        }
+        async function showMLPredictions() {
+            const response = await fetch('/api/ml/predict/demand?hours=6');
+            const predictions = await response.json();
+            const resultsDiv = document.getElementById('ml-results');
+            if (!resultsDiv) return;
+            resultsDiv.style.display = 'block';
+            resultsDiv.innerHTML = '<strong>📊 Power Demand Predictions (Next 6 Hours):</strong><br>' +
+                predictions.map(p => `Hour +${p.hour}: ${p.predicted_mw} MW (±${(p.confidence_upper - p.predicted_mw).toFixed(1)} MW)`).join('<br>');
+        }
+        async function runMLOptimization() {
+            const response = await fetch('/api/ml/optimize');
+            const optimization = await response.json();
+            const resultsDiv = document.getElementById('ml-results');
+            if (!resultsDiv) return;
+            resultsDiv.style.display = 'block';
+            resultsDiv.innerHTML = '<strong>⚡ Optimization Recommendations:</strong><br>' +
+                optimization.recommendations.map(r => `${r.type}: ${r.action} (Priority: ${r.priority})`).join('<br>') +
+                `<br><strong>Total Savings: ${optimization.total_savings_mw} MW (${optimization.savings_percentage}%)</strong>`;
+        }
+        async function askAIAdvice() {
+            // Open a minimal popup chat
+            let chat = document.getElementById('ai-chat');
+            if (!chat) {
+                chat = document.createElement('div');
+                chat.id = 'ai-chat';
+                chat.style.cssText = 'position:fixed;right:20px;bottom:20px;width:360px;max-height:60vh;background:rgba(20,20,30,0.98);border:1px solid rgba(138,43,226,0.4);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;z-index:1200;overflow:hidden;';
+                chat.innerHTML = `
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.1);">
+                        <div style="font-weight:700;color:#8a2be2;">🤖 AI Assistant</div>
+                        <button id="ai-close" class="btn btn-secondary" style="padding:6px 10px;font-size:12px;">Close</button>
+                    </div>
+                    <div id="ai-messages" style="padding:10px 12px;font-size:12px;line-height:1.4;overflow:auto;max-height:40vh;flex:1;"></div>
+                    <div style="display:flex;gap:6px;padding:10px 12px;border-top:1px solid rgba(255,255,255,0.1);">
+                        <input id="ai-input" placeholder="Ask about grid status, ML, optimization…" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:rgba(0,0,0,0.4);color:#fff;"/>
+                        <button id="ai-send" class="btn btn-secondary">Send</button>
+                    </div>
+                `;
+                document.body.appendChild(chat);
+                document.getElementById('ai-close').onclick = () => { chat.style.display = 'none'; };
+                document.getElementById('ai-send').onclick = async () => {
+                    const box = document.getElementById('ai-messages');
+                    const input = document.getElementById('ai-input');
+                    const q = input.value.trim();
+                    if (!q) return;
+                    box.innerHTML += `<div><strong>You</strong>: ${q}</div>`;
+                    input.value = '';
+                    box.innerHTML += `<div>AI is typing…</div>`;
+                    box.scrollTop = box.scrollHeight;
+                    try {
+                        const resp = await fetch('/api/ai/advice', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question:q})});
+                        const data = await resp.json();
+                        if (data.advice) {
+                            box.innerHTML += `<div style="margin-top:6px;color:#ddd;"><strong>AI</strong>: ${data.advice.replace(/\\n/g,'<br>')}</div>`;
+                        } else {
+                            box.innerHTML += `<div style="color:#f66;">Error: ${data.error||'Unknown'}</div>`;
+                        }
+                    } catch(e) {
+                        box.innerHTML += `<div style="color:#f66;">Request failed</div>`;
+                    }
+                    box.scrollTop = box.scrollHeight;
+                };
+            }
+            chat.style.display = 'flex';
+            const box = document.getElementById('ai-messages');
+            box.innerHTML = 'Loading latest summary…';
+            try {
+                const resp = await fetch('/api/ai/advice');
+                const data = await resp.json();
+                if (data.advice) {
+                    box.innerHTML = `<div style="color:#ddd;">${data.advice.replace(/\\n/g,'<br>')}</div>`;
+                } else {
+                    box.innerHTML = `<div style="color:#f66;">${data.error||'No response'}</div>`;
+                }
+            } catch(e) {
+                box.innerHTML = '<div style="color:#f66;">AI request failed.</div>'
+            }
+        }
+        setInterval(updateMLDashboard, 5000);
+        updateMLDashboard();
+        async function showBaselines() {
+            const r = await fetch('/api/ml/baselines');
+            const data = await r.json();
+            const resultsDiv = document.getElementById('ml-results');
+            if (!resultsDiv) return;
+            resultsDiv.style.display = 'block';
+            if (data.method_comparison) {
+                const rows = Object.entries(data.method_comparison)
+                  .map(([k,v]) => `${k}: MAPE ${v.MAPE}%, Runtime ${v.Runtime_ms}ms, Savings ${v.Cost_Savings}%`)
+                  .join('<br>');
+                resultsDiv.innerHTML = '<strong>📐 Baselines:</strong><br>' + rows;
+            } else {
+                resultsDiv.textContent = 'No baseline data available.';
+            }
+        }
+        async function downloadExecutiveReport() {
+            try {
+                const r = await fetch('/api/ai/report');
+                const data = await r.json();
+                if (!data.report) return alert(data.error || 'Report failed');
+                const blob = new Blob([data.report], {type: 'text/markdown'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Executive_Report_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'_')}.md`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Report generation failed');
+            }
+        }
     </script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 """
 World-Class EV Charging Station Manager - FIXED VERSION
-Handles exactly 10 charging slots, no queue, vehicles circle if full
+Handles exactly 20 charging slots, no queue, vehicles circle if full
 """
 
 import heapq
@@ -19,7 +19,7 @@ class ChargingPort:
     expected_finish: Optional[datetime] = None
 
 class EVStationManager:
-    """Manages all EV charging stations with strict 10-slot limit"""
+    """Manages all EV charging stations with strict 20-slot limit"""
     
     def __init__(self, integrated_system, sumo_net):
         self.integrated_system = integrated_system
@@ -30,7 +30,7 @@ class EVStationManager:
         self._initialize_stations()
     
     def _initialize_stations(self):
-        """Initialize stations with EXACTLY 10 ports each"""
+        """Initialize stations with EXACTLY 20 ports each"""
         
         for ev_id, ev_station in self.integrated_system.ev_stations.items():
             # Find nearest valid edge
@@ -40,9 +40,9 @@ class EVStationManager:
             )
             
             if edge:
-                # Create EXACTLY 10 charging ports per station
+                # Create EXACTLY 20 charging ports per station
                 ports = []
-                for i in range(10):  # FIXED: Exactly 10 ports
+                for i in range(20):  # FIXED: Exactly 20 ports
                     # Mix of DC fast and Level 2
                     if i < 5:  # 25% fast chargers
                         power = 150  # DC fast charging
@@ -68,7 +68,7 @@ class EVStationManager:
                     'current_load_kw': 0
                 }
                 
-                print(f"✅ Initialized {ev_station['name']} on edge {edge} with EXACTLY 10 ports")
+                print(f"✅ Initialized {ev_station['name']} on edge {edge} with EXACTLY 20 ports")
     
     def _find_nearest_valid_edge(self, lat, lon):
         """Find nearest edge that can be routed to"""
@@ -120,7 +120,7 @@ class EVStationManager:
         
         # Count occupied ports
         occupied = len([p for p in station['ports'] if p.occupied_by is not None])
-        available = 10 - occupied  # FIXED: Always 10 total
+        available = 20 - occupied  # FIXED: Always 20 total
         
         return available > 0, available
     
@@ -143,8 +143,8 @@ class EVStationManager:
         # Count current charging vehicles
         charging_count = len(station['vehicles_charging'])
         
-        # STRICT LIMIT: Only allow if under 10
-        if charging_count < 10:
+        # STRICT LIMIT: Only allow if under 20
+        if charging_count < 20:
             # Find available port
             for port in station['ports']:
                 if port.occupied_by is None:
@@ -162,11 +162,11 @@ class EVStationManager:
                     # Store reservation
                     self.vehicle_reservations[vehicle_id] = station_id
                     
-                    print(f"✅ {vehicle_id} → Port at {station['name']} ({len(station['vehicles_charging'])}/10 occupied)")
+                    print(f"✅ {vehicle_id} → Port at {station['name']} ({len(station['vehicles_charging'])}/20 occupied)")
                     return True
             
         # Station full - vehicle must circle
-        print(f"❌ {station['name']} FULL (10/10) - {vehicle_id} must circle")
+        print(f"❌ {station['name']} FULL (20/20) - {vehicle_id} must circle")
         return False
     
     def update_charging(self, vehicle_id: str, current_soc: float) -> float:
@@ -218,7 +218,7 @@ class EVStationManager:
                     if vehicle_id in self.vehicle_reservations:
                         del self.vehicle_reservations[vehicle_id]
                     
-                    print(f"🔋 {vehicle_id} finished charging at {station['name']} ({len(station['vehicles_charging'])}/10 now occupied)")
+                    print(f"🔋 {vehicle_id} finished charging at {station['name']} ({len(station['vehicles_charging'])}/20 now occupied)")
                     
                     # Return the edge where station is located
                     return station['edge']
@@ -287,9 +287,9 @@ class EVStationManager:
         
         return {
             'operational': station['operational'],
-            'total_ports': 10,  # Always 10
+            'total_ports': 20,  # Always 20
             'occupied_ports': occupied_ports,
-            'available_ports': 10 - occupied_ports,
+            'available_ports': 20 - occupied_ports,
             'vehicles_charging': len(station['vehicles_charging']),
             'current_load_kw': station['current_load_kw'],
             'max_load_kw': station['total_power_kw'],
@@ -311,7 +311,7 @@ class EVStationManager:
             
             # Check availability
             occupied = len(station['vehicles_charging'])
-            if occupied >= 10:  # Station full
+            if occupied >= 20:  # Station full
                 continue
             
             # Simple distance estimate (you could use actual routing here)

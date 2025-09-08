@@ -470,14 +470,14 @@ class ManhattanIntegratedSystem:
         """Add EV charging stations at realistic locations"""
         
         ev_locations = [
-            {'name': 'Times Square Garage', 'lat': 40.758, 'lon': -73.985, 'chargers': 50},
-            {'name': 'Penn Station Hub', 'lat': 40.750, 'lon': -73.993, 'chargers': 40},
-            {'name': 'Grand Central Charging', 'lat': 40.752, 'lon': -73.977, 'chargers': 60},
-            {'name': 'Bryant Park Station', 'lat': 40.754, 'lon': -73.984, 'chargers': 30},
-            {'name': 'Columbus Circle EV', 'lat': 40.768, 'lon': -73.982, 'chargers': 35},
-            {'name': 'Murray Hill Garage', 'lat': 40.748, 'lon': -73.978, 'chargers': 25},
+            {'name': 'Times Square Garage', 'lat': 40.758, 'lon': -73.985, 'chargers': 20},
+            {'name': 'Penn Station Hub', 'lat': 40.750, 'lon': -73.993, 'chargers': 20},
+            {'name': 'Grand Central Charging', 'lat': 40.752, 'lon': -73.977, 'chargers': 20},
+            {'name': 'Bryant Park Station', 'lat': 40.754, 'lon': -73.984, 'chargers': 20},
+            {'name': 'Columbus Circle EV', 'lat': 40.768, 'lon': -73.982, 'chargers': 20},
+            {'name': 'Murray Hill Garage', 'lat': 40.748, 'lon': -73.978, 'chargers': 20},
             {'name': 'Turtle Bay Charging', 'lat': 40.755, 'lon': -73.969, 'chargers': 20},
-            {'name': 'Midtown East Station', 'lat': 40.760, 'lon': -73.970, 'chargers': 30}
+            {'name': 'Midtown East Station', 'lat': 40.760, 'lon': -73.970, 'chargers': 20}
         ]
         
         for i, station in enumerate(ev_locations):
@@ -695,9 +695,17 @@ class ManhattanIntegratedSystem:
             if 'current_load_kw' in ev_station:
                 ev_charging_load_mw += ev_station['current_load_kw'] / 1000
         
-        # Total load including EV charging
-        total_load_mw = base_load_mw + ev_charging_load_mw
-        
+        # Get actual total load from PyPSA network (more accurate)
+        try:
+            from core.power_system import power_grid
+            pypsa_total_load_mw = float(power_grid.network.loads_t.p.sum().sum())
+            total_load_mw = pypsa_total_load_mw
+            print(f"[DEBUG] Using PyPSA total load: {total_load_mw:.2f} MW")
+        except Exception as e:
+            # Fallback to manual calculation if PyPSA not available
+            total_load_mw = base_load_mw + ev_charging_load_mw
+            print(f"[DEBUG] Using manual calculation: {total_load_mw:.2f} MW (PyPSA error: {e})")
+
         return {
             'substations': [
                 {
@@ -711,6 +719,7 @@ class ManhattanIntegratedSystem:
                 }
                 for name, data in self.substations.items()
             ],
+            'total_load_mw': total_load_mw,
             'traffic_lights': [
                 {
                     'id': tl['id'],
