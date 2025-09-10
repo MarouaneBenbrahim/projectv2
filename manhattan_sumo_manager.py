@@ -1667,7 +1667,7 @@ class ManhattanSUMOManager:
                     occupied = len([p for p in station['ports'] if p.occupied_by is not None])
                     if occupied > 0:
                         station_name = self.integrated_system.ev_stations[station_id]['name']
-                        print(f"  {station_name}: {occupied}/10 slots")
+                        print(f"  {station_name}: {occupied}/20 slots")
         
         return self.stats.copy()
     

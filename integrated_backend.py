@@ -514,10 +514,10 @@ class ManhattanIntegratedSystem:
         """Integrate all loads into PyPSA network"""
         
         for sub_name, sub_data in self.substations.items():
-            bus_name = f"{sub_name}_13.8kV"
+            bus_name = f"{sub_name.replace(' ', '_')}_13.8kV"
             
             if bus_name in self.power_grid.network.buses.index:
-                load_name = f"Distribution_{sub_name}"
+                load_name = f"Distribution_{sub_name.replace(' ', '_')}"
                 
                 hours = self.power_grid.network.snapshots.hour if hasattr(self.power_grid.network.snapshots, 'hour') else range(24)
                 load_profile = pd.Series(index=self.power_grid.network.snapshots, dtype=float)
@@ -684,7 +684,7 @@ class ManhattanIntegratedSystem:
         return True
     
     def get_network_state(self) -> Dict[str, Any]:
-        """Get complete network state for visualization"""
+        """Get complete network state for visualization - PROPERLY FIXED"""
         
         # Calculate base load
         base_load_mw = sum(s['load_mw'] for s in self.substations.values())
@@ -695,16 +695,30 @@ class ManhattanIntegratedSystem:
             if 'current_load_kw' in ev_station:
                 ev_charging_load_mw += ev_station['current_load_kw'] / 1000
         
-        # Get actual total load from PyPSA network (more accurate)
-        try:
-            from core.power_system import power_grid
-            pypsa_total_load_mw = float(power_grid.network.loads_t.p.sum().sum())
-            total_load_mw = pypsa_total_load_mw
-            print(f"[DEBUG] Using PyPSA total load: {total_load_mw:.2f} MW")
-        except Exception as e:
-            # Fallback to manual calculation if PyPSA not available
-            total_load_mw = base_load_mw + ev_charging_load_mw
-            print(f"[DEBUG] Using manual calculation: {total_load_mw:.2f} MW (PyPSA error: {e})")
+        # Calculate total load correctly
+        total_load_mw = base_load_mw + ev_charging_load_mw
+        
+        # Try to get from PyPSA if available - FIXED
+        if hasattr(self, 'power_grid') and self.power_grid:
+            try:
+                # CORRECT WAY: Sum p_set values, not time series
+                pypsa_load = 0
+                for load_name in self.power_grid.network.loads.index:
+                    load_value = self.power_grid.network.loads.at[load_name, 'p_set']
+                    pypsa_load += float(load_value) if load_value else 0
+                
+                # Only use PyPSA value if it's realistic (< 10,000 MW for Manhattan)
+                if 0 < pypsa_load < 10000:
+                    total_load_mw = pypsa_load + ev_charging_load_mw  # Add EV load to PyPSA base
+                    print(f"[DEBUG] Using PyPSA load + EV: {pypsa_load:.2f} + {ev_charging_load_mw:.2f} = {total_load_mw:.2f} MW")
+                else:
+                    # PyPSA value is unrealistic, use manual calculation
+                    print(f"[DEBUG] PyPSA load unrealistic ({pypsa_load:.2f} MW), using manual: {total_load_mw:.2f} MW")
+                    
+            except Exception as e:
+                print(f"[DEBUG] Using manual calculation: {total_load_mw:.2f} MW (error: {e})")
+        else:
+            print(f"[DEBUG] Using manual calculation: {total_load_mw:.2f} MW (PyPSA not available)")
 
         return {
             'substations': [
@@ -719,7 +733,7 @@ class ManhattanIntegratedSystem:
                 }
                 for name, data in self.substations.items()
             ],
-            'total_load_mw': total_load_mw,
+            'total_load_mw': total_load_mw,  # This should now be correct
             'traffic_lights': [
                 {
                     'id': tl['id'],
@@ -742,8 +756,8 @@ class ManhattanIntegratedSystem:
                     'chargers': ev['chargers'],
                     'operational': ev['operational'],
                     'substation': ev['substation'],
-                    'vehicles_charging': ev.get('vehicles_charging', 0),  # Add this
-                    'current_load_kw': ev.get('current_load_kw', 0)  # Add this
+                    'vehicles_charging': ev.get('vehicles_charging', 0),
+                    'current_load_kw': ev.get('current_load_kw', 0)
                 }
                 for ev in self.ev_stations.values()
             ],
@@ -763,9 +777,9 @@ class ManhattanIntegratedSystem:
                 'black_lights': sum(1 for tl in self.traffic_lights.values() if tl.get('color') == '#000000'),
                 'total_ev_stations': len(self.ev_stations),
                 'operational_ev_stations': sum(1 for ev in self.ev_stations.values() if ev['operational']),
-                'total_load_mw': total_load_mw,  # Updated to include EV charging
-                'base_load_mw': base_load_mw,  # Base load without EVs
-                'ev_charging_load_mw': ev_charging_load_mw,  # Just EV charging load
+                'total_load_mw': total_load_mw,
+                'base_load_mw': base_load_mw,
+                'ev_charging_load_mw': ev_charging_load_mw,
                 'total_primary_cables': len(self.primary_cables),
                 'total_secondary_cables': len(self.secondary_cables),
                 'operational_primary_cables': sum(1 for c in self.primary_cables if c['operational']),
