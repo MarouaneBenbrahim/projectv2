@@ -1976,16 +1976,16 @@ HTML_COMPLETE_TEMPLATE = '''
     // PERFORMANCE CONFIGURATION FOR HIGH-END HARDWARE
     // ==========================================
     const PERFORMANCE_CONFIG = {
-        renderMode: 'webgl',           // 'webgl', 'hybrid', 'dom'
-        targetFPS: 144,                // 144 FPS for ultra smoothness
-        dataUpdateRate: 33,             // 30 FPS data updates
-        interpolationSteps: 5,          // Sub-frame interpolation
-        useWebWorkers: true,            // Offload calculations
-        useGPUAcceleration: true,       // WebGL acceleration
-        vehiclePoolSize: 1000,          // Pre-allocate for 1000 vehicles
-        enableAdvancedEffects: true,    // Particles, trails, etc.
-        enablePrediction: true,         // Predictive movement
-        smoothingFactor: 0.92,          // High smoothing for powerful PC
+        renderMode: 'webgl',
+        targetFPS: 144,
+        dataUpdateRate: 60,  // Slightly slower update rate for smoother interpolation
+        interpolationSteps: 1,
+        useWebWorkers: false,
+        useGPUAcceleration: true,
+        vehiclePoolSize: 1000,
+        enableAdvancedEffects: false,
+        enablePrediction: false,
+        smoothingFactor: 1,
         enableDebugMode: window.location.hash === '#debug'
     };
 
@@ -2162,65 +2162,10 @@ HTML_COMPLETE_TEMPLATE = '''
         }
         
         initWorker() {
-            if (!PERFORMANCE_CONFIG.useWebWorkers) return;
-            
-            const workerCode = `
-                let vehicles = new Map();
-                
-                self.onmessage = function(e) {
-                    const { type, data } = e.data;
-                    
-                    if (type === 'update') {
-                        for (const vehicle of data) {
-                            if (!vehicles.has(vehicle.id)) {
-                                vehicles.set(vehicle.id, {
-                                    currentLon: vehicle.lon,
-                                    currentLat: vehicle.lat,
-                                    targetLon: vehicle.lon,
-                                    targetLat: vehicle.lat,
-                                    velocityLon: 0,
-                                    velocityLat: 0
-                                });
-                            } else {
-                                const v = vehicles.get(vehicle.id);
-                                v.targetLon = vehicle.lon;
-                                v.targetLat = vehicle.lat;
-                                v.velocityLon = (vehicle.lon - v.currentLon) * 10;
-                                v.velocityLat = (vehicle.lat - v.currentLat) * 10;
-                            }
-                        }
-                    }
-                    
-                    if (type === 'interpolate') {
-                        const result = [];
-                        const smoothing = data.smoothing || 0.15;
-                        
-                        for (const [id, v] of vehicles) {
-                            v.currentLon += (v.targetLon - v.currentLon) * smoothing + v.velocityLon * 0.001;
-                            v.currentLat += (v.targetLat - v.currentLat) * smoothing + v.velocityLat * 0.001;
-                            
-                            result.push({
-                                id: id,
-                                lon: v.currentLon,
-                                lat: v.currentLat
-                            });
-                        }
-                        
-                        self.postMessage({ type: 'positions', data: result });
-                    }
-                };
-            `;
-            
-            const blob = new Blob([workerCode], { type: 'application/javascript' });
-            this.worker = new Worker(URL.createObjectURL(blob));
-            
-            this.worker.onmessage = (e) => {
-                if (e.data.type === 'positions') {
-                    this.updateFromWorker(e.data.data);
-                }
-            };
+            // Disable worker for now - handle interpolation in main thread for better control
+            this.worker = null;
+            return;
         }
-        
         compileShader(gl, source, type) {
             const shader = gl.createShader(type);
             gl.shaderSource(shader, source);
@@ -2241,18 +2186,30 @@ HTML_COMPLETE_TEMPLATE = '''
             gl.enableVertexAttribArray(attribute);
             gl.vertexAttribPointer(attribute, size, gl.FLOAT, false, 0, 0);
         }
-        
+        getInterpolatedPosition(vehicle) {
+            // Return the smoothly interpolated position
+            return {
+                lon: vehicle.currentLon || vehicle.targetLon || 0,
+                lat: vehicle.currentLat || vehicle.targetLat || 0
+            };
+        } 
         updateVehicles(vehicleData) {
             const updateStartTime = performance.now();
+            const currentTime = performance.now();
             
             vehicleData.forEach(data => {
                 if (!this.vehicles.has(data.id)) {
+                    // Initialize with all positions aligned - critical for smooth start
                     this.vehicles.set(data.id, {
                         id: data.id,
-                        currentLon: data.lon,
-                        currentLat: data.lat,
+                        previousLon: data.lon,
+                        previousLat: data.lat,
+                        currentLon: data.lon,  // Important: start at actual position
+                        currentLat: data.lat,   // Important: start at actual position
                         targetLon: data.lon,
                         targetLat: data.lat,
+                        lastUpdateTime: currentTime,
+                        interpolationProgress: 0,
                         velocityLon: 0,
                         velocityLat: 0,
                         angle: 0,
@@ -2261,31 +2218,43 @@ HTML_COMPLETE_TEMPLATE = '''
                         opacity: 0,
                         targetOpacity: 1,
                         data: data,
-                        lastUpdate: performance.now(),
                         trail: []
                     });
                 } else {
                     const vehicle = this.vehicles.get(data.id);
                     
-                    const dt = (performance.now() - vehicle.lastUpdate) / 1000;
-                    if (dt > 0) {
-                        vehicle.velocityLon = (data.lon - vehicle.targetLon) / dt;
-                        vehicle.velocityLat = (data.lat - vehicle.targetLat) / dt;
+                    // Only update if position actually changed (prevents micro-jitter)
+                    const distanceMoved = Math.sqrt(
+                        Math.pow(data.lon - vehicle.targetLon, 2) + 
+                        Math.pow(data.lat - vehicle.targetLat, 2)
+                    );
+                    
+                    if (distanceMoved > 0.000001) { // Tiny threshold
+                        // Store current interpolated position as previous
+                        vehicle.previousLon = vehicle.currentLon;
+                        vehicle.previousLat = vehicle.currentLat;
+                        
+                        // Set new target
+                        vehicle.targetLon = data.lon;
+                        vehicle.targetLat = data.lat;
+                        
+                        // Reset interpolation
+                        vehicle.interpolationProgress = 0;
+                        vehicle.lastUpdateTime = currentTime;
+                        
+                        // Update angle
+                        const dx = vehicle.targetLon - vehicle.previousLon;
+                        const dy = vehicle.targetLat - vehicle.previousLat;
+                        if (Math.abs(dx) > 0.00001 || Math.abs(dy) > 0.00001) {
+                            vehicle.angle = Math.atan2(dy, dx);
+                        }
                     }
                     
-                    vehicle.targetLon = data.lon;
-                    vehicle.targetLat = data.lat;
                     vehicle.data = data;
-                    vehicle.lastUpdate = performance.now();
-                    
-                    const dx = data.lon - vehicle.currentLon;
-                    const dy = data.lat - vehicle.currentLat;
-                    if (Math.abs(dx) > 0.00001 || Math.abs(dy) > 0.00001) {
-                        vehicle.angle = Math.atan2(dy, dx);
-                    }
                 }
             });
             
+            // Handle removals
             const currentIds = new Set(vehicleData.map(v => v.id));
             for (const [id, vehicle] of this.vehicles) {
                 if (!currentIds.has(id)) {
@@ -2297,37 +2266,49 @@ HTML_COMPLETE_TEMPLATE = '''
                 }
             }
             
-            if (this.worker && PERFORMANCE_CONFIG.useWebWorkers) {
-                this.worker.postMessage({ type: 'update', data: vehicleData });
-            }
-            
             this.stats.updateTime = performance.now() - updateStartTime;
             this.stats.vehicles = this.vehicles.size;
         }
-        
+                
+        // Replace the current interpolate method with this improved version
         interpolate(deltaTime) {
-            if (this.worker && PERFORMANCE_CONFIG.useWebWorkers) {
-                this.worker.postMessage({ 
-                    type: 'interpolate', 
-                    data: { smoothing: PERFORMANCE_CONFIG.smoothingFactor * (deltaTime / 16.67) }
-                });
-            } else {
-                for (const [id, vehicle] of this.vehicles) {
-                    const t = PERFORMANCE_CONFIG.smoothingFactor * Math.min(1, deltaTime / 16.67);
-                    
-                    if (PERFORMANCE_CONFIG.enablePrediction) {
-                        const predictedLon = vehicle.targetLon + vehicle.velocityLon * (deltaTime / 1000) * 0.1;
-                        const predictedLat = vehicle.targetLat + vehicle.velocityLat * (deltaTime / 1000) * 0.1;
-                        
-                        vehicle.currentLon += (predictedLon - vehicle.currentLon) * t;
-                        vehicle.currentLat += (predictedLat - vehicle.currentLat) * t;
-                    } else {
-                        vehicle.currentLon += (vehicle.targetLon - vehicle.currentLon) * t;
-                        vehicle.currentLat += (vehicle.targetLat - vehicle.currentLat) * t;
-                    }
-                    
-                    vehicle.scale += (vehicle.targetScale - vehicle.scale) * t;
-                    vehicle.opacity += (vehicle.targetOpacity - vehicle.opacity) * t;
+            const now = performance.now();
+            
+            for (const [id, vehicle] of this.vehicles) {
+                // Calculate time since last server update
+                const timeSinceUpdate = now - vehicle.lastUpdateTime;
+                
+                // Use actual update interval with small buffer
+                const expectedUpdateInterval = PERFORMANCE_CONFIG.dataUpdateRate * 1.2; // 20% buffer
+                vehicle.interpolationProgress = Math.min(1, timeSinceUpdate / expectedUpdateInterval);
+                
+                // Smoother easing function - sine wave for perfect smoothness
+                const easeInOutSine = (t) => {
+                    return -(Math.cos(Math.PI * t) - 1) / 2;
+                };
+                
+                // Apply smooth easing
+                const easedProgress = easeInOutSine(vehicle.interpolationProgress);
+                
+                // Add micro-smoothing for the last bit of movement
+                const microSmooth = 0.02; // Tiny smoothing factor
+                const targetLon = vehicle.previousLon + (vehicle.targetLon - vehicle.previousLon) * easedProgress;
+                const targetLat = vehicle.previousLat + (vehicle.targetLat - vehicle.previousLat) * easedProgress;
+                
+                // Apply micro-smoothing to eliminate any remaining micro-stutters
+                vehicle.currentLon = vehicle.currentLon * (1 - microSmooth) + targetLon * microSmooth;
+                vehicle.currentLat = vehicle.currentLat * (1 - microSmooth) + targetLat * microSmooth;
+                
+                // Smooth scale animation
+                const scaleSpeed = 0.08; // Slower for smoother appearance
+                if (Math.abs(vehicle.targetScale - vehicle.scale) > 0.001) {
+                    vehicle.scale += (vehicle.targetScale - vehicle.scale) * scaleSpeed;
+                }
+                
+                // Smooth opacity animation
+                const opacitySpeed = 0.08; // Slower for smoother fade
+                if (Math.abs(vehicle.targetOpacity - vehicle.opacity) > 0.001) {
+                    vehicle.opacity += (vehicle.targetOpacity - vehicle.opacity) * opacitySpeed;
                 }
             }
             
@@ -2347,21 +2328,11 @@ HTML_COMPLETE_TEMPLATE = '''
         }
         
         getInterpolatedPosition(vehicle) {
-            if (PERFORMANCE_CONFIG.interpolationSteps > 1) {
-                const steps = PERFORMANCE_CONFIG.interpolationSteps;
-                const stepSize = 1 / steps;
-                let lon = vehicle.currentLon;
-                let lat = vehicle.currentLat;
-                
-                for (let i = 0; i < steps; i++) {
-                    lon += (vehicle.targetLon - lon) * stepSize;
-                    lat += (vehicle.targetLat - lat) * stepSize;
-                }
-                
-                return { lon, lat };
-            }
-            
-            return { lon: vehicle.currentLon, lat: vehicle.currentLat };
+            // Return the smoothly interpolated position
+            return {
+                lon: vehicle.currentLon || vehicle.targetLon || 0,
+                lat: vehicle.currentLat || vehicle.targetLat || 0
+            };
         }
         
         getVehicleColor(data) {
@@ -2450,68 +2421,133 @@ HTML_COMPLETE_TEMPLATE = '''
         }
         
         updateVehicles(vehicleData) {
-            const startTime = performance.now();
-            const currentIds = new Set();
+            const updateStartTime = performance.now();
+            const currentTime = performance.now();
             
             vehicleData.forEach(data => {
-                currentIds.add(data.id);
-                
-                if (!this.activeMarkers.has(data.id)) {
-                    const marker = this.createMarker(data);
-                    this.activeMarkers.set(data.id, marker);
+                if (!this.vehicles.has(data.id)) {
+                    // Initialize with all positions aligned - critical for smooth start
                     this.vehicles.set(data.id, {
-                        marker: marker,
-                        currentPos: [data.lon, data.lat],
-                        targetPos: [data.lon, data.lat],
-                        data: data
+                        id: data.id,
+                        previousLon: data.lon,
+                        previousLat: data.lat,
+                        currentLon: data.lon,  // Important: start at actual position
+                        currentLat: data.lat,   // Important: start at actual position
+                        targetLon: data.lon,
+                        targetLat: data.lat,
+                        lastUpdateTime: currentTime,
+                        interpolationProgress: 0,
+                        velocityLon: 0,
+                        velocityLat: 0,
+                        angle: 0,
+                        scale: 0,
+                        targetScale: 1,
+                        opacity: 0,
+                        targetOpacity: 1,
+                        data: data,
+                        trail: []
                     });
                 } else {
                     const vehicle = this.vehicles.get(data.id);
-                    vehicle.targetPos = [data.lon, data.lat];
-                    vehicle.data = data;
                     
-                    const el = vehicle.marker.getElement();
-                    el.style.background = this.getColor(data);
+                    // Only update if position actually changed (prevents micro-jitter)
+                    const distanceMoved = Math.sqrt(
+                        Math.pow(data.lon - vehicle.targetLon, 2) + 
+                        Math.pow(data.lat - vehicle.targetLat, 2)
+                    );
                     
-                    if (data.is_charging) {
-                        el.style.animation = 'pulse 1s infinite';
-                    } else {
-                        el.style.animation = 'none';
+                    if (distanceMoved > 0.000001) { // Tiny threshold
+                        // Store current interpolated position as previous
+                        vehicle.previousLon = vehicle.currentLon;
+                        vehicle.previousLat = vehicle.currentLat;
+                        
+                        // Set new target
+                        vehicle.targetLon = data.lon;
+                        vehicle.targetLat = data.lat;
+                        
+                        // Reset interpolation
+                        vehicle.interpolationProgress = 0;
+                        vehicle.lastUpdateTime = currentTime;
+                        
+                        // Update angle
+                        const dx = vehicle.targetLon - vehicle.previousLon;
+                        const dy = vehicle.targetLat - vehicle.previousLat;
+                        if (Math.abs(dx) > 0.00001 || Math.abs(dy) > 0.00001) {
+                            vehicle.angle = Math.atan2(dy, dx);
+                        }
                     }
+                    
+                    vehicle.data = data;
                 }
             });
             
-            for (const [id, marker] of this.activeMarkers) {
+            // Handle removals
+            const currentIds = new Set(vehicleData.map(v => v.id));
+            for (const [id, vehicle] of this.vehicles) {
                 if (!currentIds.has(id)) {
-                    marker.remove();
-                    const el = marker.getElement();
-                    el.style.display = 'none';
-                    this.markerPool.push(el);
-                    this.activeMarkers.delete(id);
-                    this.vehicles.delete(id);
+                    vehicle.targetOpacity = 0;
+                    vehicle.targetScale = 0;
+                    if (vehicle.opacity < 0.01) {
+                        this.vehicles.delete(id);
+                    }
                 }
             }
             
-            this.stats.updateTime = performance.now() - startTime;
+            this.stats.updateTime = performance.now() - updateStartTime;
             this.stats.vehicles = this.vehicles.size;
         }
         
         interpolate(deltaTime) {
-            const startTime = performance.now();
-            const t = PERFORMANCE_CONFIG.smoothingFactor * Math.min(1, deltaTime / 16.67);
+            const now = performance.now();
             
             for (const [id, vehicle] of this.vehicles) {
-                const [currentLon, currentLat] = vehicle.currentPos;
-                const [targetLon, targetLat] = vehicle.targetPos;
+                // Calculate time since last server update
+                const timeSinceUpdate = now - vehicle.lastUpdateTime;
                 
-                const newLon = currentLon + (targetLon - currentLon) * t;
-                const newLat = currentLat + (targetLat - currentLat) * t;
+                // Calculate interpolation progress (0 to 1)
+                // Use a slightly longer interval to ensure smooth transition to next update
+                const expectedUpdateInterval = PERFORMANCE_CONFIG.dataUpdateRate * 1.1;
+                vehicle.interpolationProgress = Math.min(1, timeSinceUpdate / expectedUpdateInterval);
                 
-                vehicle.currentPos = [newLon, newLat];
-                vehicle.marker.setLngLat([newLon, newLat]);
+                // Smooth ease-in-out interpolation function
+                const easeInOutCubic = (t) => {
+                    return t < 0.5 
+                        ? 4 * t * t * t 
+                        : 1 - Math.pow(-2 * t + 2, 3) / 2;
+                };
+                
+                // Apply easing to interpolation progress
+                const easedProgress = easeInOutCubic(vehicle.interpolationProgress);
+                
+                // Interpolate position with easing
+                vehicle.currentLon = vehicle.previousLon + 
+                    (vehicle.targetLon - vehicle.previousLon) * easedProgress;
+                vehicle.currentLat = vehicle.previousLat + 
+                    (vehicle.targetLat - vehicle.previousLat) * easedProgress;
+                
+                // Smooth scale animation
+                if (vehicle.scale !== vehicle.targetScale) {
+                    const scaleDelta = vehicle.targetScale - vehicle.scale;
+                    vehicle.scale += scaleDelta * 0.15;
+                    if (Math.abs(scaleDelta) < 0.001) {
+                        vehicle.scale = vehicle.targetScale;
+                    }
+                }
+                
+                // Smooth opacity animation
+                if (vehicle.opacity !== vehicle.targetOpacity) {
+                    const opacityDelta = vehicle.targetOpacity - vehicle.opacity;
+                    vehicle.opacity += opacityDelta * 0.15;
+                    if (Math.abs(opacityDelta) < 0.001) {
+                        vehicle.opacity = vehicle.targetOpacity;
+                    }
+                }
             }
             
-            this.stats.renderTime = performance.now() - startTime;
+            // Trigger map repaint for WebGL rendering
+            if (PERFORMANCE_CONFIG.renderMode === 'webgl') {
+                this.map.triggerRepaint();
+            }
         }
         
         getColor(data) {
@@ -2647,38 +2683,51 @@ HTML_COMPLETE_TEMPLATE = '''
     // MAIN LOOPS
     // ==========================================
     async function updateLoop() {
-        const data = await dataManager.fetchData();
-        if (data) {
-            networkState = data;
-            updateUI();
+        try {
+            const response = await fetch('/api/network_state');
+            const data = await response.json();
             
-            if (data.vehicles && layers.vehicles && vehicleRenderer) {
-                vehicleRenderer.updateVehicles(data.vehicles);
+            if (data) {
+                networkState = data;
+                updateUI();
+                
+                // Update vehicles with new positions
+                if (data.vehicles && layers.vehicles && vehicleRenderer) {
+                    vehicleRenderer.updateVehicles(data.vehicles);
+                }
+                
+                renderNetwork();
+                renderEVStations();
             }
-            
-            renderNetwork();
-            renderEVStations();
+        } catch (error) {
+            console.error('Error fetching data:', error);
         }
         
+        // Consistent update interval
         setTimeout(updateLoop, PERFORMANCE_CONFIG.dataUpdateRate);
     }
 
     let lastAnimationTime = performance.now();
+    let animationFrameId = null;
+
     function animationLoop(currentTime) {
+        // Calculate delta time
         const deltaTime = currentTime - lastAnimationTime;
         lastAnimationTime = currentTime;
         
+        // Cap delta time to prevent large jumps
+        const cappedDeltaTime = Math.min(deltaTime, 50);
+        
+        // Always interpolate vehicles every frame
         if (vehicleRenderer && layers.vehicles) {
-            vehicleRenderer.interpolate(deltaTime);
+            vehicleRenderer.interpolate(cappedDeltaTime);
         }
         
+        // Update performance monitor
         performanceMonitor.update();
         
-        if (PERFORMANCE_CONFIG.targetFPS >= 120) {
-            requestAnimationFrame(animationLoop);
-        } else {
-            setTimeout(() => requestAnimationFrame(animationLoop), 1000 / PERFORMANCE_CONFIG.targetFPS);
-        }
+        // Schedule next frame
+        animationFrameId = requestAnimationFrame(animationLoop);
     }
 
     // ==========================================
@@ -3512,9 +3561,15 @@ HTML_COMPLETE_TEMPLATE = '''
         initializeRenderers();
         initializeEVStationLayer();
         
-        updateLoop();
-        requestAnimationFrame(animationLoop);
+        // Initialize vehicle renderer
+        vehicleRenderer = new WebGLVehicleRenderer(map);
         
+        // Start update loop
+        updateLoop();
+        
+        // Start animation loop
+        requestAnimationFrame(animationLoop);
+        animationFrameId = requestAnimationFrame(animationLoop);
         setInterval(updateTime, 1000);
         updateTime();
         
