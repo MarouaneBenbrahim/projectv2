@@ -1968,113 +1968,753 @@ HTML_COMPLETE_TEMPLATE = '''
         </div>
     </div>
     
+<!-- MANHATTAN POWER GRID - COMPLETE ULTRA SMOOTH SCRIPT -->
+<!-- Copy and paste this entire script to replace your existing one -->
+
     <script>
-        // Initialize Mapbox
-        mapboxgl.accessToken = 'pk.eyJ1IjoibWFyb25veCIsImEiOiJjbWV1ODE5bHEwNGhoMmlvY2RleW51dWozIn0.FMrYdXLqnOwOEFi8qHSwxg';
+    // ==========================================
+    // PERFORMANCE CONFIGURATION FOR HIGH-END HARDWARE
+    // ==========================================
+    const PERFORMANCE_CONFIG = {
+        renderMode: 'webgl',           // 'webgl', 'hybrid', 'dom'
+        targetFPS: 144,                // 144 FPS for ultra smoothness
+        dataUpdateRate: 33,             // 30 FPS data updates
+        interpolationSteps: 5,          // Sub-frame interpolation
+        useWebWorkers: true,            // Offload calculations
+        useGPUAcceleration: true,       // WebGL acceleration
+        vehiclePoolSize: 1000,          // Pre-allocate for 1000 vehicles
+        enableAdvancedEffects: true,    // Particles, trails, etc.
+        enablePrediction: true,         // Predictive movement
+        smoothingFactor: 0.92,          // High smoothing for powerful PC
+        enableDebugMode: window.location.hash === '#debug'
+    };
+
+    // ==========================================
+    // MAPBOX INITIALIZATION
+    // ==========================================
+    mapboxgl.accessToken = 'pk.eyJ1IjoibWFyb25veCIsImEiOiJjbWV1ODE5bHEwNGhoMmlvY2RleW51dWozIn0.FMrYdXLqnOwOEFi8qHSwxg';
+
+    const map = new mapboxgl.Map({
+        container: 'map',
+        style: 'mapbox://styles/mapbox/dark-v11',
+        center: [-73.980, 40.758],
+        zoom: 14,
+        pitch: 45,
+        bearing: -20,
+        antialias: true,
+        preserveDrawingBuffer: PERFORMANCE_CONFIG.enableDebugMode,
+        refreshExpiredTiles: false,
+        fadeDuration: 0
+    });
+
+    // ==========================================
+    // WEBGL VEHICLE RENDERER (GPU ACCELERATED)
+    // ==========================================
+    class WebGLVehicleRenderer {
+        constructor(map) {
+            this.map = map;
+            this.vehicles = new Map();
+            this.animationFrame = null;
+            this.lastFrameTime = performance.now();
+            this.frameCount = 0;
+            this.fps = 0;
+            
+            this.gl = null;
+            this.program = null;
+            this.buffers = {};
+            
+            this.stats = {
+                fps: 0,
+                vehicles: 0,
+                drawCalls: 0,
+                updateTime: 0,
+                renderTime: 0
+            };
+            
+            this.initWebGL();
+            this.initWorker();
+        }
         
-        const map = new mapboxgl.Map({
-            container: 'map',
-            style: 'mapbox://styles/mapbox/dark-v11',
-            center: [-73.980, 40.758],
-            zoom: 14,
-            pitch: 45,
-            bearing: -20
-        });
+        initWebGL() {
+            this.customLayer = {
+                id: 'vehicle-webgl-layer',
+                type: 'custom',
+                
+                onAdd: (map, gl) => {
+                    this.gl = gl;
+                    
+                    const vertexShader = `
+                        attribute vec2 a_position;
+                        attribute vec3 a_color;
+                        attribute float a_size;
+                        
+                        uniform mat4 u_matrix;
+                        uniform float u_zoom;
+                        
+                        varying vec3 v_color;
+                        
+                        void main() {
+                            float size = a_size * pow(2.0, u_zoom - 14.0);
+                            gl_Position = u_matrix * vec4(a_position, 0.0, 1.0);
+                            gl_PointSize = size;
+                            v_color = a_color;
+                        }
+                    `;
+                    
+                    const fragmentShader = `
+                        precision mediump float;
+                        varying vec3 v_color;
+                        
+                        void main() {
+                            vec2 coord = 2.0 * gl_PointCoord - 1.0;
+                            float dist = length(coord);
+                            
+                            if (dist > 1.0) {
+                                discard;
+                            }
+                            
+                            float alpha = 1.0 - smoothstep(0.5, 1.0, dist);
+                            vec3 color = v_color;
+                            
+                            if (dist < 0.7) {
+                                color = mix(color, vec3(1.0), 0.3 * (1.0 - dist));
+                            }
+                            
+                            gl_FragColor = vec4(color, alpha);
+                        }
+                    `;
+                    
+                    const vs = this.compileShader(gl, vertexShader, gl.VERTEX_SHADER);
+                    const fs = this.compileShader(gl, fragmentShader, gl.FRAGMENT_SHADER);
+                    
+                    this.program = gl.createProgram();
+                    gl.attachShader(this.program, vs);
+                    gl.attachShader(this.program, fs);
+                    gl.linkProgram(this.program);
+                    
+                    this.attributes = {
+                        position: gl.getAttribLocation(this.program, 'a_position'),
+                        color: gl.getAttribLocation(this.program, 'a_color'),
+                        size: gl.getAttribLocation(this.program, 'a_size')
+                    };
+                    
+                    this.uniforms = {
+                        matrix: gl.getUniformLocation(this.program, 'u_matrix'),
+                        zoom: gl.getUniformLocation(this.program, 'u_zoom')
+                    };
+                    
+                    this.buffers = {
+                        position: gl.createBuffer(),
+                        color: gl.createBuffer(),
+                        size: gl.createBuffer()
+                    };
+                    
+                    this.arrays = {
+                        positions: new Float32Array(PERFORMANCE_CONFIG.vehiclePoolSize * 2),
+                        colors: new Float32Array(PERFORMANCE_CONFIG.vehiclePoolSize * 3),
+                        sizes: new Float32Array(PERFORMANCE_CONFIG.vehiclePoolSize)
+                    };
+                },
+                
+                render: (gl, matrix) => {
+                    if (!this.program || this.vehicles.size === 0) return;
+                    
+                    const startTime = performance.now();
+                    
+                    gl.useProgram(this.program);
+                    gl.uniformMatrix4fv(this.uniforms.matrix, false, matrix);
+                    gl.uniform1f(this.uniforms.zoom, this.map.getZoom());
+                    
+                    let index = 0;
+                    for (const [id, vehicle] of this.vehicles) {
+                        const pos = this.getInterpolatedPosition(vehicle);
+                        const projected = mapboxgl.MercatorCoordinate.fromLngLat([pos.lon, pos.lat]);
+                        
+                        this.arrays.positions[index * 2] = projected.x;
+                        this.arrays.positions[index * 2 + 1] = projected.y;
+                        
+                        const color = this.getVehicleColor(vehicle.data);
+                        this.arrays.colors[index * 3] = color.r;
+                        this.arrays.colors[index * 3 + 1] = color.g;
+                        this.arrays.colors[index * 3 + 2] = color.b;
+                        
+                        this.arrays.sizes[index] = vehicle.scale * 20;
+                        index++;
+                    }
+                    
+                    this.updateBuffer(gl, this.buffers.position, this.arrays.positions, this.attributes.position, 2, index);
+                    this.updateBuffer(gl, this.buffers.color, this.arrays.colors, this.attributes.color, 3, index);
+                    this.updateBuffer(gl, this.buffers.size, this.arrays.sizes, this.attributes.size, 1, index);
+                    
+                    gl.enable(gl.BLEND);
+                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+                    gl.drawArrays(gl.POINTS, 0, index);
+                    gl.disable(gl.BLEND);
+                    
+                    this.stats.renderTime = performance.now() - startTime;
+                    this.stats.drawCalls++;
+                }
+            };
+            
+            if (PERFORMANCE_CONFIG.renderMode === 'webgl') {
+                this.map.addLayer(this.customLayer);
+            }
+        }
         
-        // State
-        let networkState = null;
-        let markers = [];
-        let vehicleMarkers = {};  // Legacy markers
-        // Physics-like smoother: integrate velocity and apply small correction to target
-        let vehicleSnapshots = []; // keep last 2 snapshots
-        let displayStates = new Map(); // id -> {lon,lat,smSpeed,props,lastSeen}
-        let lastFrameTs = 0;
-        let vehicleLayerInitialized = false;
-        let evStationLayerInitialized = false;
-        let layers = {
-            lights: true,
-            vehicles: true,
-            primary: true,
-            secondary: true,
-            ev: true
-        };
-        let SMOOTH_MODE = true; // Enable fixed-lag interpolation for zero jumps
-        const LAG_MS = 250; // Render 250ms behind real-time to always have A/B samples
-        let sumoRunning = false;
-        let substationMarkers = {};
-        let evStationMarkers = {};
-        let sourcesInitialized = false;
-        let lightsClickBound = false;
+        initWorker() {
+            if (!PERFORMANCE_CONFIG.useWebWorkers) return;
+            
+            const workerCode = `
+                let vehicles = new Map();
+                
+                self.onmessage = function(e) {
+                    const { type, data } = e.data;
+                    
+                    if (type === 'update') {
+                        for (const vehicle of data) {
+                            if (!vehicles.has(vehicle.id)) {
+                                vehicles.set(vehicle.id, {
+                                    currentLon: vehicle.lon,
+                                    currentLat: vehicle.lat,
+                                    targetLon: vehicle.lon,
+                                    targetLat: vehicle.lat,
+                                    velocityLon: 0,
+                                    velocityLat: 0
+                                });
+                            } else {
+                                const v = vehicles.get(vehicle.id);
+                                v.targetLon = vehicle.lon;
+                                v.targetLat = vehicle.lat;
+                                v.velocityLon = (vehicle.lon - v.currentLon) * 10;
+                                v.velocityLat = (vehicle.lat - v.currentLat) * 10;
+                            }
+                        }
+                    }
+                    
+                    if (type === 'interpolate') {
+                        const result = [];
+                        const smoothing = data.smoothing || 0.15;
+                        
+                        for (const [id, v] of vehicles) {
+                            v.currentLon += (v.targetLon - v.currentLon) * smoothing + v.velocityLon * 0.001;
+                            v.currentLat += (v.targetLat - v.currentLat) * smoothing + v.velocityLat * 0.001;
+                            
+                            result.push({
+                                id: id,
+                                lon: v.currentLon,
+                                lat: v.currentLat
+                            });
+                        }
+                        
+                        self.postMessage({ type: 'positions', data: result });
+                    }
+                };
+            `;
+            
+            const blob = new Blob([workerCode], { type: 'application/javascript' });
+            this.worker = new Worker(URL.createObjectURL(blob));
+            
+            this.worker.onmessage = (e) => {
+                if (e.data.type === 'positions') {
+                    this.updateFromWorker(e.data.data);
+                }
+            };
+        }
         
-        // Load network state
-        async function loadNetworkState() {
+        compileShader(gl, source, type) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('Shader compilation error:', gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            
+            return shader;
+        }
+        
+        updateBuffer(gl, buffer, data, attribute, size, count) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, count * size), gl.DYNAMIC_DRAW);
+            gl.enableVertexAttribArray(attribute);
+            gl.vertexAttribPointer(attribute, size, gl.FLOAT, false, 0, 0);
+        }
+        
+        updateVehicles(vehicleData) {
+            const updateStartTime = performance.now();
+            
+            vehicleData.forEach(data => {
+                if (!this.vehicles.has(data.id)) {
+                    this.vehicles.set(data.id, {
+                        id: data.id,
+                        currentLon: data.lon,
+                        currentLat: data.lat,
+                        targetLon: data.lon,
+                        targetLat: data.lat,
+                        velocityLon: 0,
+                        velocityLat: 0,
+                        angle: 0,
+                        scale: 0,
+                        targetScale: 1,
+                        opacity: 0,
+                        targetOpacity: 1,
+                        data: data,
+                        lastUpdate: performance.now(),
+                        trail: []
+                    });
+                } else {
+                    const vehicle = this.vehicles.get(data.id);
+                    
+                    const dt = (performance.now() - vehicle.lastUpdate) / 1000;
+                    if (dt > 0) {
+                        vehicle.velocityLon = (data.lon - vehicle.targetLon) / dt;
+                        vehicle.velocityLat = (data.lat - vehicle.targetLat) / dt;
+                    }
+                    
+                    vehicle.targetLon = data.lon;
+                    vehicle.targetLat = data.lat;
+                    vehicle.data = data;
+                    vehicle.lastUpdate = performance.now();
+                    
+                    const dx = data.lon - vehicle.currentLon;
+                    const dy = data.lat - vehicle.currentLat;
+                    if (Math.abs(dx) > 0.00001 || Math.abs(dy) > 0.00001) {
+                        vehicle.angle = Math.atan2(dy, dx);
+                    }
+                }
+            });
+            
+            const currentIds = new Set(vehicleData.map(v => v.id));
+            for (const [id, vehicle] of this.vehicles) {
+                if (!currentIds.has(id)) {
+                    vehicle.targetOpacity = 0;
+                    vehicle.targetScale = 0;
+                    if (vehicle.opacity < 0.01) {
+                        this.vehicles.delete(id);
+                    }
+                }
+            }
+            
+            if (this.worker && PERFORMANCE_CONFIG.useWebWorkers) {
+                this.worker.postMessage({ type: 'update', data: vehicleData });
+            }
+            
+            this.stats.updateTime = performance.now() - updateStartTime;
+            this.stats.vehicles = this.vehicles.size;
+        }
+        
+        interpolate(deltaTime) {
+            if (this.worker && PERFORMANCE_CONFIG.useWebWorkers) {
+                this.worker.postMessage({ 
+                    type: 'interpolate', 
+                    data: { smoothing: PERFORMANCE_CONFIG.smoothingFactor * (deltaTime / 16.67) }
+                });
+            } else {
+                for (const [id, vehicle] of this.vehicles) {
+                    const t = PERFORMANCE_CONFIG.smoothingFactor * Math.min(1, deltaTime / 16.67);
+                    
+                    if (PERFORMANCE_CONFIG.enablePrediction) {
+                        const predictedLon = vehicle.targetLon + vehicle.velocityLon * (deltaTime / 1000) * 0.1;
+                        const predictedLat = vehicle.targetLat + vehicle.velocityLat * (deltaTime / 1000) * 0.1;
+                        
+                        vehicle.currentLon += (predictedLon - vehicle.currentLon) * t;
+                        vehicle.currentLat += (predictedLat - vehicle.currentLat) * t;
+                    } else {
+                        vehicle.currentLon += (vehicle.targetLon - vehicle.currentLon) * t;
+                        vehicle.currentLat += (vehicle.targetLat - vehicle.currentLat) * t;
+                    }
+                    
+                    vehicle.scale += (vehicle.targetScale - vehicle.scale) * t;
+                    vehicle.opacity += (vehicle.targetOpacity - vehicle.opacity) * t;
+                }
+            }
+            
+            if (PERFORMANCE_CONFIG.renderMode === 'webgl') {
+                this.map.triggerRepaint();
+            }
+        }
+        
+        updateFromWorker(positions) {
+            positions.forEach(pos => {
+                const vehicle = this.vehicles.get(pos.id);
+                if (vehicle) {
+                    vehicle.currentLon = pos.lon;
+                    vehicle.currentLat = pos.lat;
+                }
+            });
+        }
+        
+        getInterpolatedPosition(vehicle) {
+            if (PERFORMANCE_CONFIG.interpolationSteps > 1) {
+                const steps = PERFORMANCE_CONFIG.interpolationSteps;
+                const stepSize = 1 / steps;
+                let lon = vehicle.currentLon;
+                let lat = vehicle.currentLat;
+                
+                for (let i = 0; i < steps; i++) {
+                    lon += (vehicle.targetLon - lon) * stepSize;
+                    lat += (vehicle.targetLat - lat) * stepSize;
+                }
+                
+                return { lon, lat };
+            }
+            
+            return { lon: vehicle.currentLon, lat: vehicle.currentLat };
+        }
+        
+        getVehicleColor(data) {
+            let r, g, b;
+            
+            if (data.is_stranded) {
+                const flash = Math.sin(performance.now() * 0.01) > 0;
+                r = 1; g = 0; b = flash ? 1 : 0.5;
+            } else if (data.is_charging) {
+                r = 0; g = 1; b = 1;
+            } else if (data.is_queued) {
+                r = 1; g = 1; b = 0;
+            } else if (data.is_circling) {
+                r = 1; g = 0.55; b = 0;
+            } else if (data.is_ev) {
+                const battery = data.battery_percent || 100;
+                if (battery < 20) {
+                    r = 1; g = 0; b = 0;
+                } else if (battery < 50) {
+                    r = 1; g = 0.65; b = 0;
+                } else {
+                    r = 0; g = 1; b = 0;
+                }
+            } else {
+                r = 0.4; g = 0.4; b = 1;
+            }
+            
+            return { r, g, b };
+        }
+        
+        getStats() {
+            return this.stats;
+        }
+        
+        clear() {
+            this.vehicles.clear();
+            if (this.worker) {
+                this.worker.postMessage({ type: 'clear' });
+            }
+        }
+    }
+
+    // ==========================================
+    // HYBRID DOM RENDERER (FALLBACK)
+    // ==========================================
+    class HybridVehicleRenderer {
+        constructor(map) {
+            this.map = map;
+            this.vehicles = new Map();
+            this.markerPool = [];
+            this.activeMarkers = new Map();
+            this.stats = { vehicles: 0, updateTime: 0, renderTime: 0 };
+        }
+        
+        createMarker(data) {
+            let el;
+            if (this.markerPool.length > 0) {
+                el = this.markerPool.pop();
+                el.style.display = 'block';
+            } else {
+                el = document.createElement('div');
+                el.className = 'vehicle-marker-ultra';
+                el.style.cssText = `
+                    position: absolute;
+                    width: 12px;
+                    height: 12px;
+                    border-radius: 50%;
+                    border: 2px solid rgba(255,255,255,0.9);
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+                    will-change: transform;
+                    transform: translate(-50%, -50%);
+                    transition: transform 0.05s linear;
+                    pointer-events: auto;
+                    cursor: pointer;
+                `;
+            }
+            
+            el.style.background = this.getColor(data);
+            
+            const marker = new mapboxgl.Marker({
+                element: el,
+                anchor: 'center'
+            }).setLngLat([data.lon, data.lat]).addTo(this.map);
+            
+            return marker;
+        }
+        
+        updateVehicles(vehicleData) {
+            const startTime = performance.now();
+            const currentIds = new Set();
+            
+            vehicleData.forEach(data => {
+                currentIds.add(data.id);
+                
+                if (!this.activeMarkers.has(data.id)) {
+                    const marker = this.createMarker(data);
+                    this.activeMarkers.set(data.id, marker);
+                    this.vehicles.set(data.id, {
+                        marker: marker,
+                        currentPos: [data.lon, data.lat],
+                        targetPos: [data.lon, data.lat],
+                        data: data
+                    });
+                } else {
+                    const vehicle = this.vehicles.get(data.id);
+                    vehicle.targetPos = [data.lon, data.lat];
+                    vehicle.data = data;
+                    
+                    const el = vehicle.marker.getElement();
+                    el.style.background = this.getColor(data);
+                    
+                    if (data.is_charging) {
+                        el.style.animation = 'pulse 1s infinite';
+                    } else {
+                        el.style.animation = 'none';
+                    }
+                }
+            });
+            
+            for (const [id, marker] of this.activeMarkers) {
+                if (!currentIds.has(id)) {
+                    marker.remove();
+                    const el = marker.getElement();
+                    el.style.display = 'none';
+                    this.markerPool.push(el);
+                    this.activeMarkers.delete(id);
+                    this.vehicles.delete(id);
+                }
+            }
+            
+            this.stats.updateTime = performance.now() - startTime;
+            this.stats.vehicles = this.vehicles.size;
+        }
+        
+        interpolate(deltaTime) {
+            const startTime = performance.now();
+            const t = PERFORMANCE_CONFIG.smoothingFactor * Math.min(1, deltaTime / 16.67);
+            
+            for (const [id, vehicle] of this.vehicles) {
+                const [currentLon, currentLat] = vehicle.currentPos;
+                const [targetLon, targetLat] = vehicle.targetPos;
+                
+                const newLon = currentLon + (targetLon - currentLon) * t;
+                const newLat = currentLat + (targetLat - currentLat) * t;
+                
+                vehicle.currentPos = [newLon, newLat];
+                vehicle.marker.setLngLat([newLon, newLat]);
+            }
+            
+            this.stats.renderTime = performance.now() - startTime;
+        }
+        
+        getColor(data) {
+            if (data.is_stranded) return '#ff00ff';
+            if (data.is_charging) return '#00ffff';
+            if (data.is_queued) return '#ffff00';
+            if (data.is_circling) return '#ff8c00';
+            if (data.is_ev) {
+                const battery = data.battery_percent || 100;
+                if (battery < 20) return '#ff0000';
+                if (battery < 50) return '#ffa500';
+                return '#00ff00';
+            }
+            return '#6464ff';
+        }
+        
+        getStats() {
+            return this.stats;
+        }
+        
+        clear() {
+            for (const [id, marker] of this.activeMarkers) {
+                marker.remove();
+            }
+            this.activeMarkers.clear();
+            this.vehicles.clear();
+        }
+    }
+
+    // ==========================================
+    // GLOBAL STATE
+    // ==========================================
+    let networkState = null;
+    let vehicleRenderer = null;
+    let substationMarkers = {};
+    let evStationLayerInitialized = false;
+    let lightsClickBound = false;
+    let layers = {
+        lights: true,
+        vehicles: true,
+        primary: true,
+        secondary: true,
+        ev: true
+    };
+    let sumoRunning = false;
+
+    // ==========================================
+    // PERFORMANCE MONITORING
+    // ==========================================
+    const performanceMonitor = {
+        frameCount: 0,
+        lastTime: performance.now(),
+        fps: 0,
+        
+        update() {
+            this.frameCount++;
+            const now = performance.now();
+            if (now - this.lastTime >= 1000) {
+                this.fps = this.frameCount;
+                this.frameCount = 0;
+                this.lastTime = now;
+                
+                if (PERFORMANCE_CONFIG.enableDebugMode) {
+                    this.updateDebugDisplay();
+                }
+            }
+        },
+        
+        updateDebugDisplay() {
+            let debugEl = document.getElementById('debug-overlay');
+            if (!debugEl) {
+                debugEl = document.createElement('div');
+                debugEl.id = 'debug-overlay';
+                debugEl.style.cssText = `
+                    position: fixed;
+                    top: 10px;
+                    right: 10px;
+                    background: rgba(0,0,0,0.8);
+                    color: #00ff00;
+                    padding: 10px;
+                    font-family: monospace;
+                    font-size: 12px;
+                    z-index: 9999;
+                    border: 1px solid #00ff00;
+                `;
+                document.body.appendChild(debugEl);
+            }
+            
+            const stats = vehicleRenderer ? vehicleRenderer.getStats() : {};
+            debugEl.innerHTML = `
+                <div>FPS: ${this.fps}</div>
+                <div>Vehicles: ${stats.vehicles || 0}</div>
+                <div>Update: ${(stats.updateTime || 0).toFixed(2)}ms</div>
+                <div>Render: ${(stats.renderTime || 0).toFixed(2)}ms</div>
+                <div>Mode: ${PERFORMANCE_CONFIG.renderMode}</div>
+            `;
+        }
+    };
+
+    // ==========================================
+    // DATA MANAGEMENT
+    // ==========================================
+    const dataManager = {
+        lastFetch: 0,
+        cache: null,
+        fetching: false,
+        
+        async fetchData() {
+            if (this.fetching) return this.cache;
+            
+            const now = performance.now();
+            if (this.cache && now - this.lastFetch < PERFORMANCE_CONFIG.dataUpdateRate) {
+                return this.cache;
+            }
+            
+            this.fetching = true;
             try {
                 const response = await fetch('/api/network_state');
-                networkState = await response.json();
-                updateUI();
-                renderNetwork();
-                if (layers.vehicles) {
-                    renderVehicles();
-            renderEVStations();
-                }
+                const data = await response.json();
+                this.cache = data;
+                this.lastFetch = now;
+                return data;
             } catch (error) {
-                console.error('Error loading network state:', error);
+                console.error('Error fetching data:', error);
+                return this.cache;
+            } finally {
+                this.fetching = false;
             }
         }
-        
-        function showBlackoutAlert(failedCount, operationalCount) {
-            const alertEl = document.getElementById('blackout-alert');
-            const msg = document.getElementById('blackout-message');
-            // Try to get the name of the online station (default Midtown East)
-            let onlineName = 'Midtown East';
-            if (networkState && networkState.substations) {
-                const online = networkState.substations.find(s => s.operational);
-                if (online) onlineName = online.name;
-            }
-            msg.textContent = `${failedCount} stations down • ${operationalCount} on (${onlineName})`;
-            alertEl.style.display = 'flex';
-        }
-        
-        function dismissBlackoutAlert() {
-            document.getElementById('blackout-alert').style.display = 'none';
-        }
-        async function testEVRush() {
-            const response = await fetch('/api/test/ev_rush', {method: 'POST'});
-            const result = await response.json();
-            if (result.success) {
-                alert(result.message);
-            }
-        }
-        // Update UI
-        function updateUI() {
-            if (!networkState) return;
+    };
+
+    // ==========================================
+    // MAIN LOOPS
+    // ==========================================
+    async function updateLoop() {
+        const data = await dataManager.fetchData();
+        if (data) {
+            networkState = data;
+            updateUI();
             
+            if (data.vehicles && layers.vehicles && vehicleRenderer) {
+                vehicleRenderer.updateVehicles(data.vehicles);
+            }
+            
+            renderNetwork();
+            renderEVStations();
+        }
+        
+        setTimeout(updateLoop, PERFORMANCE_CONFIG.dataUpdateRate);
+    }
+
+    let lastAnimationTime = performance.now();
+    function animationLoop(currentTime) {
+        const deltaTime = currentTime - lastAnimationTime;
+        lastAnimationTime = currentTime;
+        
+        if (vehicleRenderer && layers.vehicles) {
+            vehicleRenderer.interpolate(deltaTime);
+        }
+        
+        performanceMonitor.update();
+        
+        if (PERFORMANCE_CONFIG.targetFPS >= 120) {
+            requestAnimationFrame(animationLoop);
+        } else {
+            setTimeout(() => requestAnimationFrame(animationLoop), 1000 / PERFORMANCE_CONFIG.targetFPS);
+        }
+    }
+
+    // ==========================================
+    // UI UPDATES
+    // ==========================================
+    function updateUI() {
+        if (!networkState) return;
+        
+        requestAnimationFrame(() => {
             const stats = networkState.statistics;
             
-            document.getElementById('traffic-lights').textContent = stats.total_traffic_lights;
-            document.getElementById('powered-lights').textContent = stats.powered_traffic_lights;
-            document.getElementById('load-mw').textContent = Math.round(stats.total_load_mw);
-            document.getElementById('substations-online').textContent = 
-                `${stats.operational_substations}/${stats.total_substations}`;
+            const updates = {
+                'traffic-lights': stats.total_traffic_lights,
+                'powered-lights': stats.powered_traffic_lights,
+                'load-mw': Math.round(stats.total_load_mw),
+                'substations-online': `${stats.operational_substations}/${stats.total_substations}`,
+                'green-count': stats.green_lights || 0,
+                'yellow-count': stats.yellow_lights || 0,
+                'red-count': stats.red_lights || 0,
+                'black-count': stats.black_lights || 0,
+                'total-load': Math.round(stats.total_load_mw)
+            };
             
-            document.getElementById('green-count').textContent = stats.green_lights || 0;
-            document.getElementById('yellow-count').textContent = stats.yellow_lights || 0;
-            document.getElementById('red-count').textContent = stats.red_lights || 0;
-            document.getElementById('black-count').textContent = stats.black_lights || 0;
+            Object.entries(updates).forEach(([id, value]) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = value;
+            });
             
             if (networkState.vehicle_stats) {
                 const active = (networkState.vehicles || []).length;
-                const evs = networkState.vehicle_stats.ev_vehicles || 0;
                 document.getElementById('active-vehicles').textContent = active;
-                document.getElementById('ev-count').textContent = evs;
-
-                // Status bar quick stats
+                document.getElementById('ev-count').textContent = networkState.vehicle_stats.ev_vehicles || 0;
                 document.getElementById('vehicle-count').textContent = active;
                 document.getElementById('charging-stations').textContent = 
-                 `${networkState.vehicle_stats.vehicles_charging || 0}/${networkState.vehicle_stats.vehicles_queued || 0}`;
+                    `${networkState.vehicle_stats.vehicles_charging || 0}/${networkState.vehicle_stats.vehicles_queued || 0}`;
             }
-            
-            document.getElementById('total-load').textContent = Math.round(stats.total_load_mw);
             
             const controls = document.getElementById('substation-controls');
             if (controls.children.length === 0) {
@@ -2113,1055 +2753,786 @@ HTML_COMPLETE_TEMPLATE = '''
                 indicator.style.background = '#ff0000';
                 status.textContent = 'Critical Failures';
             }
+        });
+    }
+
+    // ==========================================
+    // RENDERING FUNCTIONS
+    // ==========================================
+    function initializeRenderers() {
+        if (PERFORMANCE_CONFIG.renderMode === 'webgl') {
+            vehicleRenderer = new WebGLVehicleRenderer(map);
+        } else {
+            vehicleRenderer = new HybridVehicleRenderer(map);
+        }
+    }
+
+    function initializeEVStationLayer() {
+        if (evStationLayerInitialized) return;
+        
+        map.addSource('ev-stations', {
+            type: 'geojson',
+            data: {
+                type: 'FeatureCollection',
+                features: []
+            }
+        });
+        
+        map.addLayer({
+            id: 'ev-stations-layer',
+            type: 'circle',
+            source: 'ev-stations',
+            paint: {
+                'circle-radius': [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    12, 6,
+                    14, 8,
+                    16, 10,
+                    18, 14
+                ],
+                'circle-color': ['get', 'color'],
+                'circle-opacity': 0.95,
+                'circle-stroke-width': 2,
+                'circle-stroke-color': '#ffffff',
+                'circle-stroke-opacity': 0.9
+            }
+        });
+
+        map.addLayer({
+            id: 'ev-stations-icon',
+            type: 'symbol',
+            source: 'ev-stations',
+            layout: {
+                'text-field': '⚡',
+                'text-size': [
+                    'interpolate', ['linear'], ['zoom'],
+                    12, 12,
+                    14, 14,
+                    16, 16,
+                    18, 20
+                ],
+                'text-allow-overlap': true,
+                'text-ignore-placement': true
+            },
+            paint: {
+                'text-color': '#ffffff',
+                'text-halo-color': '#000000',
+                'text-halo-width': 0.6
+            }
+        });
+
+        map.addLayer({
+            id: 'ev-stations-badge-bg',
+            type: 'circle',
+            source: 'ev-stations',
+            filter: ['>', ['get', 'charging_count'], 0],
+            paint: {
+                'circle-radius': [
+                    'interpolate', ['linear'], ['zoom'],
+                    12, 7,
+                    16, 8,
+                    18, 10
+                ],
+                'circle-color': [
+                    'case',
+                    ['>=', ['get', 'charging_count'], 20], '#ff0000',
+                    ['>=', ['get', 'charging_count'], 15], '#ffa500',
+                    ['>=', ['get', 'charging_count'], 10], '#ffff00',
+                    '#00ff00'
+                ],
+                'circle-stroke-color': '#ffffff',
+                'circle-stroke-width': 2,
+                'circle-opacity': 1.0,
+                'circle-translate': [10, -10],
+                'circle-translate-anchor': 'map'
+            }
+        });
+
+        map.addLayer({
+            id: 'ev-stations-badge-text',
+            type: 'symbol',
+            source: 'ev-stations',
+            filter: ['>', ['get', 'charging_count'], 0],
+            layout: {
+                'text-field': ['to-string', ['get', 'charging_count']],
+                'text-size': [
+                    'interpolate', ['linear'], ['zoom'],
+                    12, 11,
+                    16, 12,
+                    18, 14
+                ],
+                'text-allow-overlap': true,
+                'text-ignore-placement': true
+            },
+            paint: {
+                'text-color': '#ffffff',
+                'text-halo-color': '#000000',
+                'text-halo-width': 0.6,
+                'text-translate': [10, -10],
+                'text-translate-anchor': 'map'
+            }
+        });
+        
+        function onEVClick(e) {
+            const props = e.features[0].properties;
+            
+            new mapboxgl.Popup()
+                .setLngLat(e.lngLat)
+                .setHTML(`
+                    <strong>${props.name}</strong><br>
+                    Status: <span style="color: ${props.operational ? '#00ff88' : '#ff0000'}">
+                        ${props.operational ? '✅ Online' : '❌ Offline'}
+                    </span><br>
+                    ⚡ Charging: ${props.charging_count}/20<br>
+                    Capacity: ${props.chargers} chargers<br>
+                    Substation: ${props.substation}
+                `)
+                .addTo(map);
         }
         
-        // Initialize vehicle layer (call once)
-        function initializeVehicleLayer() {
-            if (vehicleLayerInitialized) return;
-            
-            // Add GeoJSON source for vehicles
-            map.addSource('vehicles', {
-                type: 'geojson',
-                data: {
-                    type: 'FeatureCollection',
-                    features: []
-                }
-            });
-            
-            // Add vehicle layer - circles that stay on the map
-            map.addLayer({
-                id: 'vehicles-layer',
-                type: 'circle',
-                source: 'vehicles',
-                paint: {
-                    'circle-radius': [
-                        'interpolate',
-                        ['linear'],
-                        ['zoom'],
-                        12, 3,
-                        14, 5,
-                        16, 7,
-                        18, 10
-                    ],
-                    'circle-color': ['get', 'color'],
-                    'circle-opacity': 0.9,
-                    'circle-stroke-width': 1.5,
-                    'circle-stroke-color': '#ffffff',
-                    'circle-stroke-opacity': 0.8
-                }
-            });
-            
-            // Add click handler for vehicle info
-            map.on('click', 'vehicles-layer', (e) => {
-                const props = e.features[0].properties;
+        map.on('click', 'ev-stations-layer', onEVClick);
+        map.on('click', 'ev-stations-icon', onEVClick);
+        
+        evStationLayerInitialized = true;
+    }
+
+    function renderNetwork() {
+        if (!networkState) return;
+        
+        networkState.substations.forEach(sub => {
+            if (!substationMarkers[sub.name]) {
+                const el = document.createElement('div');
+                el.className = 'substation-marker';
+                el.style.cssText = `
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 50%;
+                    border: 3px solid white;
+                    cursor: pointer;
+                    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                `;
                 
-                new mapboxgl.Popup()
-                    .setLngLat(e.lngLat)
-                    .setHTML(`
-                        <strong>Vehicle ${props.id}</strong><br>
-                        Type: ${props.type}<br>
-                        Speed: ${props.speed_kmh} km/h<br>
-                        ${props.is_ev ? `Battery: ${props.battery_percent}%` : 'Gas Vehicle'}<br>
-                        ${props.is_charging ? '🔌 Charging at ' + props.assigned_station : ''}<br>
-                        Distance: ${props.distance_traveled} m<br>
-                        Wait time: ${props.waiting_time}s<br>
-                        On road: ${props.edge || 'unknown'}
-                    `)
+                const marker = new mapboxgl.Marker(el)
+                    .setLngLat([sub.lon, sub.lat])
+                    .setPopup(new mapboxgl.Popup({offset: 25}))
                     .addTo(map);
-            });
+                
+                substationMarkers[sub.name] = marker;
+            }
             
-            // Change cursor on hover
-            map.on('mouseenter', 'vehicles-layer', () => {
-                map.getCanvas().style.cursor = 'pointer';
-            });
+            const el = substationMarkers[sub.name].getElement();
+            el.style.background = sub.operational ? 
+                'radial-gradient(circle, #ff0066 40%, #cc0052 100%)' :
+                'radial-gradient(circle, #ff0000 40%, #aa0000 100%)';
+            el.style.boxShadow = sub.operational ?
+                '0 0 30px rgba(255,0,102,0.9)' :
+                '0 0 30px rgba(255,0,0,0.9)';
+                
+            substationMarkers[sub.name].setPopup(new mapboxgl.Popup({offset: 25}).setHTML(`
+                <strong>${sub.name}</strong><br>
+                Capacity: ${sub.capacity_mva} MVA<br>
+                Load: ${sub.load_mw.toFixed(1)} MW<br>
+                Status: <span style="color: ${sub.operational ? '#00ff88' : '#ff0000'}">
+                    ${sub.operational ? '⚡ ONLINE' : '⚠️ FAILED'}
+                </span><br>
+                Coverage: ${sub.coverage_area}
+            `));
+        });
+        
+        if (networkState.cables) {
+            if (networkState.cables.primary) {
+                const primaryFeatures = networkState.cables.primary
+                    .filter(cable => cable.path && cable.path.length > 1)
+                    .map(cable => ({
+                        type: 'Feature',
+                        geometry: { type: 'LineString', coordinates: cable.path },
+                        properties: { operational: cable.operational }
+                    }));
+                const primaryData = { type: 'FeatureCollection', features: primaryFeatures };
+                if (map.getSource('primary-cables')) {
+                    map.getSource('primary-cables').setData(primaryData);
+                } else {
+                    map.addSource('primary-cables', { type: 'geojson', data: primaryData });
+                    map.addLayer({
+                        id: 'primary-cables',
+                        type: 'line',
+                        source: 'primary-cables',
+                        paint: {
+                            'line-color': ['case', ['get', 'operational'], '#00ff88', '#ff0000'],
+                            'line-width': 3,
+                            'line-opacity': 0.7
+                        }
+                    });
+                }
+                if (map.getLayer('primary-cables')) {
+                    map.setLayoutProperty('primary-cables', 'visibility', layers.primary ? 'visible' : 'none');
+                }
+            }
             
-            map.on('mouseleave', 'vehicles-layer', () => {
-                map.getCanvas().style.cursor = '';
-            });
-            
-            vehicleLayerInitialized = true;
+            if (networkState.cables.secondary) {
+                const secondaryFeatures = (layers.secondary ? networkState.cables.secondary : [])
+                    .filter(cable => cable.path && cable.path.length > 1)
+                    .map(cable => ({
+                        type: 'Feature',
+                        geometry: { type: 'LineString', coordinates: cable.path },
+                        properties: { operational: cable.operational, substation: cable.substation || 'unknown' }
+                    }));
+                const secondaryData = { type: 'FeatureCollection', features: secondaryFeatures };
+                if (map.getSource('secondary-cables')) {
+                    map.getSource('secondary-cables').setData(secondaryData);
+                } else {
+                    map.addSource('secondary-cables', { type: 'geojson', data: secondaryData });
+                    map.addLayer({
+                        id: 'secondary-cables',
+                        type: 'line',
+                        source: 'secondary-cables',
+                        paint: {
+                            'line-color': '#ffaa00',
+                            'line-width': 0.8,
+                            'line-opacity': ['case', ['get', 'operational'], 0.45, 0.15]
+                        }
+                    });
+                }
+                if (map.getLayer('secondary-cables')) {
+                    map.setLayoutProperty('secondary-cables', 'visibility', layers.secondary ? 'visible' : 'none');
+                }
+            }
         }
         
-        // Initialize EV station layer (call once)
-        function initializeEVStationLayer() {
-            if (evStationLayerInitialized) return;
-            
-            // Add GeoJSON source for EV stations
-            map.addSource('ev-stations', {
-                type: 'geojson',
-                data: {
-                    type: 'FeatureCollection',
-                    features: []
+        if (networkState.traffic_lights) {
+            const features = (layers.lights ? networkState.traffic_lights : []).map(tl => ({
+                type: 'Feature',
+                geometry: { type: 'Point', coordinates: [tl.lon, tl.lat] },
+                properties: {
+                    powered: tl.powered,
+                    color: tl.color || '#ff0000',
+                    phase: tl.phase,
+                    intersection: tl.intersection
                 }
-            });
-            
-            // Base circle for station (background)
-            map.addLayer({
-                id: 'ev-stations-layer',
-                type: 'circle',
-                source: 'ev-stations',
-                paint: {
-                    'circle-radius': [
-                        'interpolate',
-                        ['linear'],
-                        ['zoom'],
-                        12, 6,
-                        14, 8,
-                        16, 10,
-                        18, 14
-                    ],
-                    'circle-color': ['get', 'color'],
-                    'circle-opacity': 0.95,
-                    'circle-stroke-width': 2,
-                    'circle-stroke-color': '#ffffff',
-                    'circle-stroke-opacity': 0.9
-                }
-            });
-
-            // Center lightning icon to preserve original look
-            map.addLayer({
-                id: 'ev-stations-icon',
-                type: 'symbol',
-                source: 'ev-stations',
-                layout: {
-                    'text-field': '⚡',
-                    'text-size': [
-                        'interpolate', ['linear'], ['zoom'],
-                        12, 12,
-                        14, 14,
-                        16, 16,
-                        18, 20
-                    ],
-                    'text-allow-overlap': true,
-                    'text-ignore-placement': true
-                },
-                paint: {
-                    'text-color': '#ffffff',
-                    'text-halo-color': '#000000',
-                    'text-halo-width': 0.6
-                }
-            });
-
-            // Badge background (shows when charging_count > 0)
-// In initializeEVStationLayer(), update the badge background layer:
-            map.addLayer({
-                id: 'ev-stations-badge-bg',
-                type: 'circle',
-                source: 'ev-stations',
-                filter: ['>', ['get', 'charging_count'], 0],  // Show badge when charging
-                paint: {
-                    'circle-radius': [
-                        'interpolate', ['linear'], ['zoom'],
-                        12, 7,
-                        16, 8,
-                        18, 10
-                    ],
-                    'circle-color': [
-                        'case',
-                        ['>=', ['get', 'charging_count'], 20], '#ff0000',  // Full - red
-                        ['>=', ['get', 'charging_count'], 15], '#ffa500',  // Almost full - orange
-                        ['>=', ['get', 'charging_count'], 10], '#ffff00',  // Half full - yellow
-                        '#00ff00'  // Available - green
-                    ],
-                    'circle-stroke-color': '#ffffff',
-                    'circle-stroke-width': 2,
-                    'circle-opacity': 1.0,
-                    'circle-translate': [10, -10],
-                    'circle-translate-anchor': 'map'
-                }
-            });
-
-            // Badge text (charging count) on top-right
-            map.addLayer({
-                id: 'ev-stations-badge-text',
-                type: 'symbol',
-                source: 'ev-stations',
-                filter: ['>', ['get', 'charging_count'], 0],
-                layout: {
-                    'text-field': ['to-string', ['get', 'charging_count']],
-                    'text-size': [
-                        'interpolate', ['linear'], ['zoom'],
-                        12, 11,
-                        16, 12,
-                        18, 14
-                    ],
-                    'text-allow-overlap': true,
-                    'text-ignore-placement': true
-                },
-                paint: {
-                    'text-color': '#ffffff',
-                    'text-halo-color': '#000000',
-                    'text-halo-width': 0.6,
-                    'text-translate': [10, -10],
-                    'text-translate-anchor': 'map'
-                }
-            });
-            
-            // Add click handler for EV station info
-            function onEVClick(e) {
-                const props = e.features[0].properties;
-                
-                const chargingText = props.charging_count > 0 ? 
-                    `<span style="color: #00ffff">⚡ Charging: ${props.charging_count}/20</span>` : 
-                    '<span>⚡ Charging: 0/20</span>';
-                
-                const queuedText = props.queued_count > 0 ? 
-                    `<br><span style="color: #ffff00">⏳ Queued: ${props.queued_count}/20</span>` : '';
-                
-                new mapboxgl.Popup()
-                    .setLngLat(e.lngLat)
-                    .setHTML(`
-                        <strong>${props.name}</strong><br>
-                        Status: <span style="color: ${props.operational ? '#00ff88' : '#ff0000'}">
-                            ${props.operational ? '✅ Online' : '❌ Offline'}
-                        </span><br>
-                        ${chargingText}
-                        ${queuedText}<br>
-                        Capacity: ${props.chargers} chargers<br>
-                        Substation: ${props.substation}
-                    `)
-                    .addTo(map);
+            }));
+            const tlData = { type: 'FeatureCollection', features };
+            if (map.getSource('traffic-lights')) {
+                map.getSource('traffic-lights').setData(tlData);
+            } else {
+                map.addSource('traffic-lights', { type: 'geojson', data: tlData });
+                map.addLayer({
+                    id: 'traffic-lights',
+                    type: 'circle',
+                    source: 'traffic-lights',
+                    paint: {
+                        'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 2, 14, 3, 16, 5],
+                        'circle-color': ['get', 'color'],
+                        'circle-opacity': 0.9,
+                        'circle-stroke-width': 0.5,
+                        'circle-stroke-color': '#ffffff',
+                        'circle-stroke-opacity': 0.3
+                    }
+                });
             }
-            map.on('click', 'ev-stations-layer', onEVClick);
-            map.on('click', 'ev-stations-icon', onEVClick);
-            map.on('click', 'ev-stations-badge-bg', onEVClick);
-            map.on('click', 'ev-stations-badge-text', onEVClick);
-            
-            // Change cursor on hover for all ev layers
-            const evHoverLayers = ['ev-stations-layer', 'ev-stations-icon', 'ev-stations-badge-bg', 'ev-stations-badge-text'];
-            evHoverLayers.forEach(layerId => {
-                map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
-                map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
-            });
-            
-            evStationLayerInitialized = true;
+            if (!lightsClickBound && map.getLayer('traffic-lights')) {
+                lightsClickBound = true;
+                map.on('click', 'traffic-lights', (e) => {
+                    const props = e.features[0].properties;
+                    let status = '🟢 Green';
+                    if (props.color === '#ffff00') status = '🟡 Yellow';
+                    else if (props.color === '#ff0000') status = '🔴 Red';
+                    else if (props.color === '#000000') status = '⚫ No Power';
+                    new mapboxgl.Popup()
+                        .setLngLat(e.lngLat)
+                        .setHTML(`
+                            <strong>Traffic Light</strong><br>
+                            ${props.intersection}<br>
+                            Status: ${status}
+                        `)
+                        .addTo(map);
+                });
+            }
+            if (map.getLayer('traffic-lights')) {
+                map.setLayoutProperty('traffic-lights', 'visibility', layers.lights ? 'visible' : 'none');
+            }
+        }
+    }
+
+    function renderEVStations() {
+        if (!networkState || !networkState.ev_stations) {
+            if (map.getLayer('ev-stations-layer')) {
+                map.setLayoutProperty('ev-stations-layer', 'visibility', 'none');
+            }
+            return;
         }
         
-        // Clean up old vehicle markers
-        function cleanupOldVehicleMarkers() {
-            for (const [id, marker] of Object.entries(vehicleMarkers)) {
-                marker.remove();
-            }
-            vehicleMarkers = {};
+        if (!evStationLayerInitialized && map.loaded()) {
+            initializeEVStationLayer();
         }
         
-        // Render vehicles using GeoJSON layer (FIXED)
-// In renderVehicles() function - ensure NO filtering of charging vehicles
-        function renderVehicles() {
-            if (!networkState || !networkState.vehicles) {
-                if (map.getLayer('vehicles-layer')) {
-                    map.setLayoutProperty('vehicles-layer', 'visibility', 'none');
-                }
-                return;
+        if (!map.getSource('ev-stations')) return;
+        
+        ['ev-stations-layer','ev-stations-icon','ev-stations-badge-bg','ev-stations-badge-text'].forEach(id => {
+            if (map.getLayer(id)) {
+                map.setLayoutProperty(id, 'visibility', layers.ev ? 'visible' : 'none');
+            }
+        });
+        
+        const features = networkState.ev_stations.map(ev => {
+            let chargingCount = ev.vehicles_charging || 0;
+            let queuedCount = ev.vehicles_queued || 0;
+            
+            if (chargingCount === 0 && networkState.vehicles) {
+                chargingCount = networkState.vehicles.filter(v => 
+                    v.is_charging && v.assigned_station === ev.id
+                ).length;
             }
             
-            // Initialize layer if needed
-            if (!vehicleLayerInitialized && map.loaded()) {
-                initializeVehicleLayer();
-            }
+            let color = ev.operational ? '#00aaff' : '#666';
             
-            if (!map.getSource('vehicles')) return;
-            
-            // Show/hide vehicle layer based on toggle
-            if (map.getLayer('vehicles-layer')) {
-                map.setLayoutProperty('vehicles-layer', 'visibility', layers.vehicles ? 'visible' : 'none');
-            }
-            
-            // Convert ALL vehicles to GeoJSON features - include road info for snapping
-            const features = networkState.vehicles.map(vehicle => ({
+            return {
                 type: 'Feature',
                 geometry: {
                     type: 'Point',
-                    coordinates: [vehicle.lon, vehicle.lat]
+                    coordinates: [ev.lon, ev.lat]
                 },
                 properties: {
-                    id: vehicle.id,
-                    type: vehicle.type,
-                    speed_kmh: vehicle.speed_kmh || 0,
-                    is_ev: vehicle.is_ev || false,
-                    is_charging: vehicle.is_charging || false,
-                    is_queued: vehicle.is_queued || false,
-                    is_circling: vehicle.is_circling || false,
-                    is_stranded: vehicle.is_stranded || false,
-                    battery_percent: vehicle.battery_percent || 100,
-                    color: vehicle.is_stranded ? '#ff00ff' :      // Magenta for stranded
-                        vehicle.is_charging ? '#00ffff' :      // Cyan for charging
-                        vehicle.is_queued ? '#ffff00' :        // Yellow for queued
-                        vehicle.is_circling ? '#ff8c00' :      // Dark orange for circling
-                        vehicle.battery_percent < 20 ? '#ff0000' :  // Red for critical
-                        vehicle.battery_percent < 30 ? '#ffa500' :  // Orange for low
-                        vehicle.is_ev ? '#00ff00' :            // Green for good battery
-                        vehicle.type === 'taxi' ? '#ffff00' :
-                        '#6464ff',
-                    angle: vehicle.angle || 0,
-                    edge_id: vehicle.edge_id || '',
-                    lane_id: vehicle.lane_id || '',
-                    lane_pos: vehicle.lane_pos || 0,
-                    lane_len: vehicle.lane_len || 1,
-                    edge_shape: vehicle.edge_shape || null,
-                    distance_traveled: vehicle.distance_traveled || 0,
-                    waiting_time: vehicle.waiting_time || 0,
-                    assigned_station: vehicle.assigned_station || ''
+                    id: ev.id,
+                    name: ev.name,
+                    chargers: ev.chargers,
+                    charging_count: chargingCount,
+                    queued_count: queuedCount,
+                    operational: ev.operational,
+                    substation: ev.substation,
+                    color: color
                 }
-            }));
-            
-            // Update the source data
-            const source = map.getSource('vehicles');
-            if (source) {
-                if (!SMOOTH_MODE) {
-                    // ORIGINAL RAW MOVEMENT (no smoothing)
-                    source.setData({ type:'FeatureCollection', features: features });
-                    // Clear smoothing state to avoid artifacts when toggling back
-                    vehicleSnapshots = [];
-                    displayStates.clear();
-                } else {
-                    // SMOOTHED MODE (uses snapshots/physics)
-                    const now = performance.now();
-                    const positions = {};
-                    // Helper: nearest point on polyline and arc-length
-                    const nearOnPoly = (lon, lat, poly) => {
-                        let segLens = new Array(poly.length-1);
-                        let total=0; for (let i=0;i<poly.length-1;i++){const dx=poly[i+1][0]-poly[i][0];const dy=poly[i+1][1]-poly[i][1];const L=Math.hypot(dx,dy);segLens[i]=L;total+=L;}
-                        let bestD=Infinity, acc=0, bestS=0, px=poly[0][0], py=poly[0][1];
-                        for (let i=0;i<segLens.length;i++){
-                            const x1=poly[i][0], y1=poly[i][1], x2=poly[i+1][0], y2=poly[i+1][1];
-                            const dx=x2-x1, dy=y2-y1; const L2=dx*dx+dy*dy || 1e-9;
-                            let t=((lon-x1)*dx+(lat-y1)*dy)/L2; t=Math.max(0,Math.min(1,t));
-                            const qx=x1+dx*t, qy=y1+dy*t; const d=Math.hypot(lon-qx, lat-qy);
-                            if (d<bestD){bestD=d; bestS=acc+segLens[i]*t; px=qx; py=qy;}
-                            acc+=segLens[i];
-                        }
-                        return {px,py,s:bestS,total};
-                    };
-                    features.forEach(f => {
-                        const props=f.properties; let lon=f.geometry.coordinates[0], lat=f.geometry.coordinates[1];
-                        let px=lon, py=lat, sDist=null, total=null; let edgeId=props.edge_id||'';
-                        if (props.edge_shape && props.edge_shape.length>=2){
-                            const res=nearOnPoly(lon,lat,props.edge_shape);
-                            px=res.px; py=res.py; sDist=res.s; total=res.total;
-                        }
-                        positions[props.id]={ lon:px, lat:py, props:{...props, edge_id:edgeId, sDist, sTotal:total, poly:props.edge_shape||null} };
-                    });
-                    vehicleSnapshots.push({ ts: now, positions });
-                    if (vehicleSnapshots.length > 2) vehicleSnapshots.shift();
-                    // Initialize draw on first snapshot
-                    if (vehicleSnapshots.length === 1) {
-                        // Draw snapped points initially
-                        const initFeatures = Object.values(positions).map(p=>({type:'Feature',geometry:{type:'Point',coordinates:[p.lon,p.lat]},properties:p.props}));
-                        source.setData({ type:'FeatureCollection', features: initFeatures });
-                    }
-                }
-            }
-        }
-
-        // Smooth animation between network refreshes
-        function animateVehicles() {
-            requestAnimationFrame(animateVehicles);
-            const src = map.getSource('vehicles');
-            if (!src || vehicleSnapshots.length < 1 || !SMOOTH_MODE) return;
-            const now = performance.now();
-            lastFrameTs = now;
-            const playhead = now - LAG_MS;
-            const featuresOut = [];
-            // Find A,B snapshots bracketing playhead
-            let aIdx = 0; while (aIdx+1 < vehicleSnapshots.length && vehicleSnapshots[aIdx+1].ts <= playhead) aIdx++;
-            const bIdx = Math.min(aIdx+1, vehicleSnapshots.length-1);
-            const A = vehicleSnapshots[aIdx], B = vehicleSnapshots[bIdx];
-            const denom = Math.max(1, B.ts - A.ts);
-            const t = Math.min(1, Math.max(0, (playhead - A.ts) / denom));
-            // Interpolate positions; if same edge and have sDist, interpolate arc-length and map to polyline A.props.poly
-            const ids = new Set([...Object.keys(A.positions), ...Object.keys(B.positions)]);
-            ids.forEach(id => {
-                const pA = A.positions[id];
-                const pB = B.positions[id] || pA;
-                if (!pA && !pB) return;
-                let lon, lat, props = pB.props || pA.props;
-                if (pA.props && pB.props && pA.props.edge_id === pB.props.edge_id && pA.props.poly && pA.props.poly.length>=2 && typeof pA.props.sDist==='number' && typeof pB.props.sDist==='number'){
-                    // Interpolate along same polyline
-                    const sTotal = pA.props.sTotal || pB.props.sTotal || 0;
-                    const sInterp = (pA.props.sDist||0) + ((pB.props.sDist||0) - (pA.props.sDist||0)) * t;
-                    // Map arc-length to point on polyline
-                    const poly = pA.props.poly; // use A's poly
-                    // Precompute seg lengths
-                    let segLens = new Array(poly.length-1), total=0; for (let i=0;i<poly.length-1;i++){const dx=poly[i+1][0]-poly[i][0]; const dy=poly[i+1][1]-poly[i][1]; const L=Math.hypot(dx,dy); segLens[i]=L; total+=L;}
-                    let d = Math.max(0, Math.min(total, sInterp));
-                    lon = poly[0][0]; lat = poly[0][1];
-                    for (let i=0;i<segLens.length;i++){
-                        if (d <= segLens[i]) { const tt = segLens[i]? (d/segLens[i]) : 0; lon = poly[i][0] + (poly[i+1][0]-poly[i][0])*tt; lat = poly[i][1] + (poly[i+1][1]-poly[i][1])*tt; break; }
-                        else { d -= segLens[i]; lon = poly[i+1][0]; lat = poly[i+1][1]; }
-                    }
-                } else {
-                    // Fallback: linear between snapped lon/lat
-                    const ax = pA.lon, ay = pA.lat, bx = pB.lon, by = pB.lat;
-                    lon = ax + (bx - ax) * t; lat = ay + (by - ay) * t;
-                }
-                featuresOut.push({ type:'Feature', geometry:{ type:'Point', coordinates:[lon,lat] }, properties: props });
+            };
+        });
+        
+        const source = map.getSource('ev-stations');
+        if (source) {
+            source.setData({
+                type: 'FeatureCollection',
+                features: features
             });
-            // Optionally drop vehicles not seen for a while
-            // (not needed in fixed-lag mode)
-            src.setData({ type:'FeatureCollection', features: featuresOut });
         }
-        
-        // Render EV stations using GeoJSON layer (FIXED - same as vehicles)
-function renderEVStations() {
-    if (!networkState || !networkState.ev_stations) {
-        if (map.getLayer('ev-stations-layer')) {
-            map.setLayoutProperty('ev-stations-layer', 'visibility', 'none');
-        }
-        return;
     }
-    
-    // Initialize layer if needed
-    if (!evStationLayerInitialized && map.loaded()) {
-        initializeEVStationLayer();
+
+    // ==========================================
+    // CONTROL FUNCTIONS
+    // ==========================================
+    async function startSUMO() {
+        const response = await fetch('/api/sumo/start', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                vehicle_count: 10,
+                ev_percentage: 0.7
+            })
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+            sumoRunning = true;
+            document.getElementById('start-sumo-btn').disabled = true;
+            document.getElementById('stop-sumo-btn').disabled = false;
+            document.getElementById('spawn10-btn').disabled = false;
+            alert(result.message);
+        } else {
+            alert('Failed to start SUMO: ' + result.message);
+        }
     }
-    
-    if (!map.getSource('ev-stations')) return;
-    
-    // Show/hide EV station layers based on toggle
-    ['ev-stations-layer','ev-stations-icon','ev-stations-badge-bg','ev-stations-badge-text'].forEach(id => {
-        if (map.getLayer(id)) {
-            map.setLayoutProperty(id, 'visibility', layers.ev ? 'visible' : 'none');
-        }
-    });
-    
-    // Convert EV stations to GeoJSON features with accurate counts
-    const features = networkState.ev_stations.map(ev => {
-        // Use counts from backend (already calculated)
-        let chargingCount = ev.vehicles_charging || 0;
-        let queuedCount = ev.vehicles_queued || 0;
+
+    async function stopSUMO() {
+        const response = await fetch('/api/sumo/stop', {method: 'POST'});
+        const result = await response.json();
         
-        // Fallback: count from vehicles if backend didn't provide
-        if (chargingCount === 0 && networkState.vehicles) {
-            chargingCount = networkState.vehicles.filter(v => 
-                v.is_charging && v.assigned_station === ev.id
-            ).length;
-        }
-        
-        let color = ev.operational ? '#00aaff' : '#666';
-        
-        return {
-            type: 'Feature',
-            geometry: {
-                type: 'Point',
-                coordinates: [ev.lon, ev.lat]
-            },
-            properties: {
-                id: ev.id,
-                name: ev.name,
-                chargers: ev.chargers,
-                charging_count: chargingCount,
-                queued_count: queuedCount,
-                operational: ev.operational,
-                substation: ev.substation,
-                color: color
+        if (result.success) {
+            sumoRunning = false;
+            document.getElementById('start-sumo-btn').disabled = false;
+            document.getElementById('stop-sumo-btn').disabled = true;
+            document.getElementById('spawn10-btn').disabled = true;
+            
+            if (vehicleRenderer) {
+                vehicleRenderer.clear();
             }
-        };
-    });
-    
-    // Update the source data
-    const source = map.getSource('ev-stations');
-    if (source) {
-        source.setData({
-            type: 'FeatureCollection',
-            features: features
+        }
+    }
+
+    async function spawnVehicles(count) {
+        const response = await fetch('/api/sumo/spawn', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                count: count,
+                ev_percentage: 0.7
+            })
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+            console.log(`Spawned ${result.spawned} vehicles`);
+        }
+    }
+
+    async function setSimulationSpeed(speed) {
+        document.getElementById('speed-value').textContent = `${speed}x`;
+        
+        await fetch('/api/simulation/speed', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({speed: parseFloat(speed)})
         });
     }
-}
-        // Render network
-        function renderNetwork() {
-            if (!networkState) return;
-            
-            // Substations
-            const existingSubIds = new Set();
-            networkState.substations.forEach(sub => {
-                existingSubIds.add(sub.name);
-                let marker = substationMarkers[sub.name];
-                if (!marker) {
-                    const el = document.createElement('div');
-                    el.style.width = '30px';
-                    el.style.height = '30px';
-                    el.style.borderRadius = '50%';
-                    el.style.border = '3px solid #fff';
-                    el.style.cursor = 'pointer';
-                    marker = new mapboxgl.Marker(el)
-                        .setLngLat([sub.lon, sub.lat])
-                        .setPopup(new mapboxgl.Popup({offset: 25}))
-                        .addTo(map);
-                    substationMarkers[sub.name] = marker;
-                }
-                
-                const el = substationMarkers[sub.name].getElement();
-                el.style.background = sub.operational ?
-                    'radial-gradient(circle, #ff0066 40%, #cc0052 100%)' :
-                    'radial-gradient(circle, #ff0000 40%, #aa0000 100%)';
-                el.style.boxShadow = sub.operational ?
-                    '0 0 25px rgba(255,0,102,0.9)' :
-                    '0 0 25px rgba(255,0,0,0.9)';
-                substationMarkers[sub.name].setPopup(new mapboxgl.Popup({offset: 25}).setHTML(`
-                    <strong>${sub.name}</strong><br>
-                    Capacity: ${sub.capacity_mva} MVA<br>
-                    Load: ${sub.load_mw.toFixed(1)} MW<br>
-                    Status: <span style="color: ${sub.operational ? '#00ff88' : '#ff0000'}">
-                        ${sub.operational ? '⚡ ONLINE' : '⚠️ FAILED'}
-                    </span><br>
-                    Coverage: ${sub.coverage_area}
-                `));
-            });
-            
-            Object.keys(substationMarkers).forEach(name => {
-                if (!existingSubIds.has(name)) {
-                    substationMarkers[name].remove();
-                    delete substationMarkers[name];
-                }
-            });
-            
-// EV stations with charging counters (FIXED - using GeoJSON layer)
-            if (layers.ev && networkState.ev_stations) {
-                // Initialize layer if needed
-                if (!evStationLayerInitialized && map.loaded()) {
-                    initializeEVStationLayer();
-                }
-                
-                if (map.getSource('ev-stations')) {
-                    // Convert EV stations to GeoJSON features
-                    const features = networkState.ev_stations.map(ev => {
-                        // Count vehicles charging at this station
-                        let chargingCount = 0;
-                        if (networkState.vehicles) {
-                            chargingCount = networkState.vehicles.filter(v => 
-                                v.is_charging && v.assigned_station === ev.id
-                            ).length;
-                        }
-                        
-                        // Base color: keep station icon consistent (blue when operational, gray when offline)
-                        let color = ev.operational ? '#00aaff' : '#666';
-                        
-                        return {
-                            type: 'Feature',
-                            geometry: {
-                                type: 'Point',
-                                coordinates: [ev.lon, ev.lat]
-                            },
-                            properties: {
-                                id: ev.id,
-                                name: ev.name,
-                                chargers: ev.chargers,
-                                charging_count: chargingCount,
-                                operational: ev.operational,
-                                substation: ev.substation,
-                                color: color
-                            }
-                        };
-                    });
-                    
-                    // Update the source data
-                    const source = map.getSource('ev-stations');
-                    if (source) {
-                        source.setData({
-                            type: 'FeatureCollection',
-                            features: features
-                        });
-                    }
-                    
-                    // Show/hide EV station layer based on toggle
-                    if (map.getLayer('ev-stations-layer')) {
-                        map.setLayoutProperty('ev-stations-layer', 'visibility', 'visible');
-                    }
-                }
-            } else {
-                // Hide EV station layer if not enabled
-                if (map.getLayer('ev-stations-layer')) {
-                    map.setLayoutProperty('ev-stations-layer', 'visibility', 'none');
-                }
-            }
-            
-            // Cables
-            if (networkState.cables) {
-                if (networkState.cables.primary) {
-                    const primaryFeatures = networkState.cables.primary
-                        .filter(cable => cable.path && cable.path.length > 1)
-                        .map(cable => ({
-                            type: 'Feature',
-                            geometry: { type: 'LineString', coordinates: cable.path },
-                            properties: { operational: cable.operational }
-                        }));
-                    const primaryData = { type: 'FeatureCollection', features: primaryFeatures };
-                    if (map.getSource('primary-cables')) {
-                        map.getSource('primary-cables').setData(primaryData);
-                    } else {
-                        map.addSource('primary-cables', { type: 'geojson', data: primaryData });
-                        map.addLayer({
-                            id: 'primary-cables',
-                            type: 'line',
-                            source: 'primary-cables',
-                            paint: {
-                                'line-color': ['case', ['get', 'operational'], '#00ff88', '#ff0000'],
-                                'line-width': 3,
-                                'line-opacity': 0.7
-                            }
-                        });
-                    }
-                    if (map.getLayer('primary-cables')) {
-                        map.setLayoutProperty('primary-cables', 'visibility', layers.primary ? 'visible' : 'none');
-                    }
-                }
-                
-                if (networkState.cables.secondary) {
-                    const secondaryFeatures = (layers.secondary ? networkState.cables.secondary : [])
-                        .filter(cable => cable.path && cable.path.length > 1)
-                        .map(cable => ({
-                            type: 'Feature',
-                            geometry: { type: 'LineString', coordinates: cable.path },
-                            properties: { operational: cable.operational, substation: cable.substation || 'unknown' }
-                        }));
-                    const secondaryData = { type: 'FeatureCollection', features: secondaryFeatures };
-                    if (map.getSource('secondary-cables')) {
-                        map.getSource('secondary-cables').setData(secondaryData);
-                    } else {
-                        map.addSource('secondary-cables', { type: 'geojson', data: secondaryData });
-                        map.addLayer({
-                            id: 'secondary-cables',
-                            type: 'line',
-                            source: 'secondary-cables',
-                            paint: {
-                                'line-color': [
-                                    'match', ['get', 'substation'],
-                                    "Hell's Kitchen", '#ff66aa',
-                                    'Times Square', '#66ffaa',
-                                    'Penn Station', '#ffaa66',
-                                    'Grand Central', '#66aaff',
-                                    'Murray Hill', '#aaff66',
-                                    'Turtle Bay', '#aa66ff',
-                                    'Columbus Circle', '#66ffaa',
-                                    'Midtown East', '#ff66ff',
-                                    '#ffaa00'
-                                ],
-                                'line-width': 0.8,
-                                'line-opacity': ['case', ['get', 'operational'], 0.45, 0.15]
-                            }
-                        });
-                    }
-                    if (map.getLayer('secondary-cables')) {
-                        map.setLayoutProperty('secondary-cables', 'visibility', layers.secondary ? 'visible' : 'none');
-                    }
-                }
-            }
-            
-            // Traffic lights
-            if (networkState.traffic_lights) {
-                const features = (layers.lights ? networkState.traffic_lights : []).map(tl => ({
-                    type: 'Feature',
-                    geometry: { type: 'Point', coordinates: [tl.lon, tl.lat] },
-                    properties: {
-                        powered: tl.powered,
-                        color: tl.color || '#ff0000',
-                        phase: tl.phase,
-                        intersection: tl.intersection
-                    }
-                }));
-                const tlData = { type: 'FeatureCollection', features };
-                if (map.getSource('traffic-lights')) {
-                    map.getSource('traffic-lights').setData(tlData);
-                } else {
-                    map.addSource('traffic-lights', { type: 'geojson', data: tlData });
-                    map.addLayer({
-                        id: 'traffic-lights',
-                        type: 'circle',
-                        source: 'traffic-lights',
-                        paint: {
-                            'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 2, 14, 3, 16, 5],
-                            'circle-color': ['get', 'color'],
-                            'circle-opacity': 0.9,
-                            'circle-stroke-width': 0.5,
-                            'circle-stroke-color': '#ffffff',
-                            'circle-stroke-opacity': 0.3
-                        }
-                    });
-                }
-                if (!lightsClickBound && map.getLayer('traffic-lights')) {
-                    lightsClickBound = true;
-                    map.on('click', 'traffic-lights', (e) => {
-                        const props = e.features[0].properties;
-                        let status = '🟢 Green';
-                        if (props.color === '#ffff00') status = '🟡 Yellow';
-                        else if (props.color === '#ff0000') status = '🔴 Red';
-                        else if (props.color === '#000000') status = '⚫ No Power';
-                        new mapboxgl.Popup()
-                            .setLngLat(e.lngLat)
-                            .setHTML(`
-                                <strong>Traffic Light</strong><br>
-                                ${props.intersection}<br>
-                                Status: ${status}
-                            `)
-                            .addTo(map);
-                    });
-                }
-                if (map.getLayer('traffic-lights')) {
-                    map.setLayoutProperty('traffic-lights', 'visibility', layers.lights ? 'visible' : 'none');
-                }
-            }
-        }
-        
-        // Toggle layer visibility
-        function toggleLayer(layer) {
-            layers[layer] = !layers[layer];
-            
-            if (layer === 'lights') {
-                if (map.getLayer('traffic-lights')) {
-                    map.setLayoutProperty('traffic-lights', 'visibility', layers[layer] ? 'visible' : 'none');
-                }
-            } else if (layer === 'primary') {
-                if (map.getLayer('primary-cables')) {
-                    map.setLayoutProperty('primary-cables', 'visibility', layers[layer] ? 'visible' : 'none');
-                }
-            } else if (layer === 'secondary') {
-                if (map.getLayer('secondary-cables')) {
-                    map.setLayoutProperty('secondary-cables', 'visibility', layers[layer] ? 'visible' : 'none');
-                }
-            } else if (layer === 'vehicles') {
-                if (map.getLayer('vehicles-layer')) {
-                    map.setLayoutProperty('vehicles-layer', 'visibility', layers[layer] ? 'visible' : 'none');
-                }
-            } else {
-                renderNetwork();
-            }
-        }
-        
-        // SUMO Control Functions
-        async function startSUMO() {
-            const response = await fetch('/api/sumo/start', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    vehicle_count: 10,
-                    ev_percentage: 0.7
-                })
-            });
-            
-            const result = await response.json();
-            if (result.success) {
-                sumoRunning = true;
-                document.getElementById('start-sumo-btn').disabled = true;
-                document.getElementById('stop-sumo-btn').disabled = false;
-                document.getElementById('spawn10-btn').disabled = false;
-                alert(result.message);
-            } else {
-                alert('Failed to start SUMO: ' + result.message);
-            }
-        }
-        
-        async function stopSUMO() {
-            const response = await fetch('/api/sumo/stop', {method: 'POST'});
-            const result = await response.json();
-            
-            if (result.success) {
-                sumoRunning = false;
-                document.getElementById('start-sumo-btn').disabled = false;
-                document.getElementById('stop-sumo-btn').disabled = true;
-                document.getElementById('spawn10-btn').disabled = true;
-                
-                // Clear vehicle data
-                if (map.getSource('vehicles')) {
-                    map.getSource('vehicles').setData({
-                        type: 'FeatureCollection',
-                        features: []
-                    });
-                }
-            }
-        }
-        
-        async function spawnVehicles(count) {
-            const response = await fetch('/api/sumo/spawn', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    count: count,
-                    ev_percentage: 0.7
-                })
-            });
-            
-            const result = await response.json();
-            if (result.success) {
-                console.log(`Spawned ${result.spawned} vehicles`);
-            }
-        }
-        
-        async function setScenario(scenario) {
-            const response = await fetch('/api/sumo/scenario', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({scenario: scenario})
-            });
-            
-            const result = await response.json();
-            if (result.success) {
-                document.querySelectorAll('.scenario-btn').forEach(btn => {
-                    btn.classList.remove('active');
-                });
-                event.target.classList.add('active');
-            }
-        }
-        
-        async function setSimulationSpeed(speed) {
-            document.getElementById('speed-value').textContent = `${speed}x`;
-            
-            await fetch('/api/simulation/speed', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({speed: parseFloat(speed)})
-            });
-        }
-        
-        async function triggerBlackout() {
-            try {
-                const subs = (networkState?.substations || []).map(s => s.name);
-                const total = subs.length;
-                // Show single alert immediately
-                showBlackoutAlert(total - 1, 1);
-                // Apply failures in background
-                for (const s of subs) {
-                    if (s !== 'Midtown East') {
-                        await fetch(`/api/fail/${encodeURIComponent(s)}`, {method: 'POST'});
-                    }
-                }
-                await loadNetworkState();
-            } catch (e) {
-                console.error('Blackout error', e);
-            }
-        }
-        
-        async function toggleSubstation(name) {
-            const sub = networkState.substations.find(s => s.name === name);
-            
-            if (sub.operational) {
-                await fetch(`/api/fail/${name}`, { method: 'POST' });
-            } else {
-                await fetch(`/api/restore/${name}`, { method: 'POST' });
-            }
-            
-            await loadNetworkState();
-        }
-        
-        async function restoreAll() {
-            await fetch('/api/restore_all', { method: 'POST' });
-            await loadNetworkState();
-        }
-        
-        function updateTime() {
-            const now = new Date();
-            document.getElementById('time').textContent = 
-                now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-        }
-        
-        // Initialize
-        map.on('load', () => {
-            // Initialize vehicle layer
-            initializeVehicleLayer();
-            
-            // Initialize EV station layer
-            initializeEVStationLayer();
-            
-            // Clean up any old markers
-            cleanupOldVehicleMarkers();
-            
-            // Load initial state
-            loadNetworkState();
-            
-            // Update every 200ms for maximum smoothness (higher CPU)
-            setInterval(loadNetworkState, 200);
-            setInterval(updateTime, 1000);
-            updateTime();
-            // Start smooth animation loop
-            animateVehicles();
-        });
 
-        // Chatbot controls
-        function toggleChatbot() {
-            const launcher = document.getElementById('chatbot-launcher');
-            const win = document.getElementById('chatbot-window');
-            if (win.style.display === 'flex') {
-                win.style.display = 'none';
-                launcher.style.display = 'flex';
-            } else {
-                win.style.display = 'flex';
-                launcher.style.display = 'none';
-                // Load summary on open
-                const box = document.getElementById('chat-messages');
-                box.innerHTML = '<div class="msg ai">Loading summary…</div>';
-                fetch('/api/ai/advice').then(r=>r.json()).then(data=>{
+    async function toggleSubstation(name) {
+        const sub = networkState.substations.find(s => s.name === name);
+        
+        if (sub.operational) {
+            await fetch(`/api/fail/${name}`, { method: 'POST' });
+        } else {
+            await fetch(`/api/restore/${name}`, { method: 'POST' });
+        }
+        
+        await loadNetworkState();
+    }
+
+    async function restoreAll() {
+        await fetch('/api/restore_all', { method: 'POST' });
+        await loadNetworkState();
+    }
+
+    async function triggerBlackout() {
+        try {
+            const subs = (networkState?.substations || []).map(s => s.name);
+            const total = subs.length;
+            showBlackoutAlert(total - 1, 1);
+            for (const s of subs) {
+                if (s !== 'Midtown East') {
+                    await fetch(`/api/fail/${encodeURIComponent(s)}`, {method: 'POST'});
+                }
+            }
+            await loadNetworkState();
+        } catch (e) {
+            console.error('Blackout error', e);
+        }
+    }
+
+    async function testEVRush() {
+        const response = await fetch('/api/test/ev_rush', {method: 'POST'});
+        const result = await response.json();
+        if (result.success) {
+            alert(result.message);
+        }
+    }
+
+    async function loadNetworkState() {
+        try {
+            const response = await fetch('/api/network_state');
+            networkState = await response.json();
+            updateUI();
+            renderNetwork();
+            if (layers.vehicles && vehicleRenderer && networkState.vehicles) {
+                vehicleRenderer.updateVehicles(networkState.vehicles);
+            }
+            renderEVStations();
+        } catch (error) {
+            console.error('Error loading network state:', error);
+        }
+    }
+
+    function toggleLayer(layer) {
+        layers[layer] = !layers[layer];
+        
+        if (layer === 'lights') {
+            if (map.getLayer('traffic-lights')) {
+                map.setLayoutProperty('traffic-lights', 'visibility', layers[layer] ? 'visible' : 'none');
+            }
+        } else if (layer === 'primary') {
+            if (map.getLayer('primary-cables')) {
+                map.setLayoutProperty('primary-cables', 'visibility', layers[layer] ? 'visible' : 'none');
+            }
+        } else if (layer === 'secondary') {
+            if (map.getLayer('secondary-cables')) {
+                map.setLayoutProperty('secondary-cables', 'visibility', layers[layer] ? 'visible' : 'none');
+            }
+        } else if (layer === 'vehicles') {
+            if (PERFORMANCE_CONFIG.renderMode === 'webgl' && map.getLayer('vehicle-webgl-layer')) {
+                map.setLayoutProperty('vehicle-webgl-layer', 'visibility', layers[layer] ? 'visible' : 'none');
+            }
+            if (!layers[layer] && vehicleRenderer) {
+                vehicleRenderer.clear();
+            }
+        } else if (layer === 'ev') {
+            renderNetwork();
+        }
+    }
+
+    function updateTime() {
+        const now = new Date();
+        document.getElementById('time').textContent = 
+            now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function showBlackoutAlert(failedCount, operationalCount) {
+        const alertEl = document.getElementById('blackout-alert');
+        const msg = document.getElementById('blackout-message');
+        let onlineName = 'Midtown East';
+        if (networkState && networkState.substations) {
+            const online = networkState.substations.find(s => s.operational);
+            if (online) onlineName = online.name;
+        }
+        msg.textContent = `${failedCount} stations down • ${operationalCount} on (${onlineName})`;
+        alertEl.style.display = 'flex';
+    }
+
+    function dismissBlackoutAlert() {
+        document.getElementById('blackout-alert').style.display = 'none';
+    }
+
+    // ==========================================
+    // ML DASHBOARD FUNCTIONS
+    // ==========================================
+    async function updateMLDashboard() {
+        try {
+            const response = await fetch('/api/ml/dashboard');
+            const data = await response.json();
+            const accEl = document.getElementById('ml-accuracy');
+            if (!accEl) return;
+            accEl.textContent = `${100 - (data.metrics.demand_mape || 5)}%`;
+            document.getElementById('ml-patterns').textContent = data.metrics.patterns_found || 0;
+            document.getElementById('ml-anomalies').textContent = data.anomalies ? data.anomalies.length : 0;
+            document.getElementById('ml-savings').textContent = `${data.metrics.optimization_savings || 0}%`;
+            document.getElementById('ml-updated').textContent = new Date(data.timestamp).toLocaleTimeString('en-US', {hour12:false});
+            if (data.anomalies && data.anomalies.length > 0) {
+                const resultsDiv = document.getElementById('ml-results');
+                if (resultsDiv) {
+                    resultsDiv.style.display = 'block';
+                    resultsDiv.innerHTML = '<strong>⚠️ Anomalies Detected:</strong><br>' +
+                        data.anomalies.map(a => `${a.type}: ${a.description}`).join('<br>');
+                }
+            }
+        } catch (e) {
+            console.error('ML Dashboard error:', e);
+        }
+    }
+
+    async function showMLPredictions() {
+        const response = await fetch('/api/ml/predict/demand?hours=6');
+        const predictions = await response.json();
+        const resultsDiv = document.getElementById('ml-results');
+        if (!resultsDiv) return;
+        resultsDiv.style.display = 'block';
+        resultsDiv.innerHTML = '<strong>📊 Power Demand Predictions (Next 6 Hours):</strong><br>' +
+            predictions.map(p => `Hour +${p.hour}: ${p.predicted_mw} MW (±${(p.confidence_upper - p.predicted_mw).toFixed(1)} MW)`).join('<br>');
+    }
+
+    async function runMLOptimization() {
+        const response = await fetch('/api/ml/optimize');
+        const optimization = await response.json();
+        const resultsDiv = document.getElementById('ml-results');
+        if (!resultsDiv) return;
+        resultsDiv.style.display = 'block';
+        resultsDiv.innerHTML = '<strong>⚡ Optimization Recommendations:</strong><br>' +
+            optimization.recommendations.map(r => `${r.type}: ${r.action} (Priority: ${r.priority})`).join('<br>') +
+            `<br><strong>Total Savings: ${optimization.total_savings_mw} MW (${optimization.savings_percentage}%)</strong>`;
+    }
+
+    async function askAIAdvice() {
+        let chat = document.getElementById('ai-chat');
+        if (!chat) {
+            chat = document.createElement('div');
+            chat.id = 'ai-chat';
+            chat.style.cssText = 'position:fixed;right:20px;bottom:20px;width:360px;max-height:60vh;background:rgba(20,20,30,0.98);border:1px solid rgba(138,43,226,0.4);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;z-index:1200;overflow:hidden;';
+            chat.innerHTML = `
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.1);">
+                    <div style="font-weight:700;color:#8a2be2;">🤖 AI Assistant</div>
+                    <button id="ai-close" class="btn btn-secondary" style="padding:6px 10px;font-size:12px;">Close</button>
+                </div>
+                <div id="ai-messages" style="padding:10px 12px;font-size:12px;line-height:1.4;overflow:auto;max-height:40vh;flex:1;"></div>
+                <div style="display:flex;gap:6px;padding:10px 12px;border-top:1px solid rgba(255,255,255,0.1);">
+                    <input id="ai-input" placeholder="Ask about grid status, ML, optimization…" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:rgba(0,0,0,0.4);color:#fff;"/>
+                    <button id="ai-send" class="btn btn-secondary">Send</button>
+                </div>
+            `;
+            document.body.appendChild(chat);
+            document.getElementById('ai-close').onclick = () => { chat.style.display = 'none'; };
+            document.getElementById('ai-send').onclick = async () => {
+                const box = document.getElementById('ai-messages');
+                const input = document.getElementById('ai-input');
+                const q = input.value.trim();
+                if (!q) return;
+                box.innerHTML += `<div><strong>You</strong>: ${q}</div>`;
+                input.value = '';
+                box.innerHTML += `<div>AI is typing…</div>`;
+                box.scrollTop = box.scrollHeight;
+                try {
+                    const resp = await fetch('/api/ai/advice', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question:q})});
+                    const data = await resp.json();
                     if (data.advice) {
-                        box.innerHTML = `<div class=\"msg ai\">${data.advice.replace(/\\n/g,'<br>')}</div>`;
+                        box.innerHTML += `<div style="margin-top:6px;color:#ddd;"><strong>AI</strong>: ${data.advice.replace(/\\n/g,'<br>')}</div>`;
                     } else {
-                        box.innerHTML = `<div class=\"msg ai\" style=\"color:#f66;\">${data.error||'No response'}</div>`;
+                        box.innerHTML += `<div style="color:#f66;">Error: ${data.error||'Unknown'}</div>`;
                     }
-                }).catch(()=>{
-                    box.innerHTML = '<div class="msg ai" style="color:#f66;">AI request failed.</div>';
-                });
-            }
-        }
-        function sendChatMessage() {
-            const input = document.getElementById('chat-input');
-            const text = (input.value||'').trim();
-            if (!text) return;
-            const box = document.getElementById('chat-messages');
-            box.innerHTML += `<div class=\"msg user\"><strong>You:</strong> ${text}</div>`;
-            box.innerHTML += `<div class=\"typing\">AI is typing…</div>`;
-            const typingRef = box.querySelector('.typing');
-            input.value = '';
-            fetch('/api/ai/advice', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question:text})})
-              .then(r=>r.json()).then(data=>{
-                if (typingRef) typingRef.remove();
-                if (data.advice) {
-                    box.innerHTML += `<div class=\"msg ai\"><strong>AI:</strong> ${data.advice.replace(/\\n/g,'<br>')}</div>`;
-                } else {
-                    box.innerHTML += `<div class=\"msg ai\" style=\"color:#f66;\"><strong>AI:</strong> ${data.error||'No response'}</div>`;
+                } catch(e) {
+                    box.innerHTML += `<div style="color:#f66;">Request failed</div>`;
                 }
                 box.scrollTop = box.scrollHeight;
-              }).catch(()=>{
-                if (typingRef) typingRef.remove();
-                box.innerHTML += '<div class="msg ai" style="color:#f66;"><strong>AI:</strong> Request failed</div>';
-              });
+            };
         }
+        chat.style.display = 'flex';
+        const box = document.getElementById('ai-messages');
+        box.innerHTML = 'Loading latest summary…';
+        try {
+            const resp = await fetch('/api/ai/advice');
+            const data = await resp.json();
+            if (data.advice) {
+                box.innerHTML = `<div style="color:#ddd;">${data.advice.replace(/\\n/g,'<br>')}</div>`;
+            } else {
+                box.innerHTML = `<div style="color:#f66;">${data.error||'No response'}</div>`;
+            }
+        } catch(e) {
+            box.innerHTML = '<div style="color:#f66;">AI request failed.</div>'
+        }
+    }
 
-        // ==========================
-        // ML DASHBOARD WIDGET
-        // ==========================
-        async function updateMLDashboard() {
-            try {
-                const response = await fetch('/api/ml/dashboard');
-                const data = await response.json();
-                const accEl = document.getElementById('ml-accuracy');
-                if (!accEl) return; // Widget not present
-                accEl.textContent = `${100 - (data.metrics.demand_mape || 5)}%`;
-                document.getElementById('ml-patterns').textContent = data.metrics.patterns_found || 0;
-                document.getElementById('ml-anomalies').textContent = data.anomalies ? data.anomalies.length : 0;
-                document.getElementById('ml-savings').textContent = `${data.metrics.optimization_savings || 0}%`;
-                document.getElementById('ml-updated').textContent = new Date(data.timestamp).toLocaleTimeString('en-US', {hour12:false});
-                if (data.anomalies && data.anomalies.length > 0) {
-                    const resultsDiv = document.getElementById('ml-results');
-                    if (resultsDiv) {
-                        resultsDiv.style.display = 'block';
-                        resultsDiv.innerHTML = '<strong>⚠️ Anomalies Detected:</strong><br>' +
-                            data.anomalies.map(a => `${a.type}: ${a.description}`).join('<br>');
-                    }
-                }
-            } catch (e) {
-                console.error('ML Dashboard error:', e);
-            }
+    async function showBaselines() {
+        const r = await fetch('/api/ml/baselines');
+        const data = await r.json();
+        const resultsDiv = document.getElementById('ml-results');
+        if (!resultsDiv) return;
+        resultsDiv.style.display = 'block';
+        if (data.method_comparison) {
+            const rows = Object.entries(data.method_comparison)
+            .map(([k,v]) => `${k}: MAPE ${v.MAPE}%, Runtime ${v.Runtime_ms}ms, Savings ${v.Cost_Savings}%`)
+            .join('<br>');
+            resultsDiv.innerHTML = '<strong>📐 Baselines:</strong><br>' + rows;
+        } else {
+            resultsDiv.textContent = 'No baseline data available.';
         }
-        async function showMLPredictions() {
-            const response = await fetch('/api/ml/predict/demand?hours=6');
-            const predictions = await response.json();
-            const resultsDiv = document.getElementById('ml-results');
-            if (!resultsDiv) return;
-            resultsDiv.style.display = 'block';
-            resultsDiv.innerHTML = '<strong>📊 Power Demand Predictions (Next 6 Hours):</strong><br>' +
-                predictions.map(p => `Hour +${p.hour}: ${p.predicted_mw} MW (±${(p.confidence_upper - p.predicted_mw).toFixed(1)} MW)`).join('<br>');
+    }
+
+    async function downloadExecutiveReport() {
+        try {
+            const r = await fetch('/api/ai/report');
+            const data = await r.json();
+            if (!data.report) return alert(data.error || 'Report failed');
+            const blob = new Blob([data.report], {type: 'text/markdown'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Executive_Report_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'_')}.md`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            alert('Report generation failed');
         }
-        async function runMLOptimization() {
-            const response = await fetch('/api/ml/optimize');
-            const optimization = await response.json();
-            const resultsDiv = document.getElementById('ml-results');
-            if (!resultsDiv) return;
-            resultsDiv.style.display = 'block';
-            resultsDiv.innerHTML = '<strong>⚡ Optimization Recommendations:</strong><br>' +
-                optimization.recommendations.map(r => `${r.type}: ${r.action} (Priority: ${r.priority})`).join('<br>') +
-                `<br><strong>Total Savings: ${optimization.total_savings_mw} MW (${optimization.savings_percentage}%)</strong>`;
-        }
-        async function askAIAdvice() {
-            // Open a minimal popup chat
-            let chat = document.getElementById('ai-chat');
-            if (!chat) {
-                chat = document.createElement('div');
-                chat.id = 'ai-chat';
-                chat.style.cssText = 'position:fixed;right:20px;bottom:20px;width:360px;max-height:60vh;background:rgba(20,20,30,0.98);border:1px solid rgba(138,43,226,0.4);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;z-index:1200;overflow:hidden;';
-                chat.innerHTML = `
-                    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.1);">
-                        <div style="font-weight:700;color:#8a2be2;">🤖 AI Assistant</div>
-                        <button id="ai-close" class="btn btn-secondary" style="padding:6px 10px;font-size:12px;">Close</button>
-                    </div>
-                    <div id="ai-messages" style="padding:10px 12px;font-size:12px;line-height:1.4;overflow:auto;max-height:40vh;flex:1;"></div>
-                    <div style="display:flex;gap:6px;padding:10px 12px;border-top:1px solid rgba(255,255,255,0.1);">
-                        <input id="ai-input" placeholder="Ask about grid status, ML, optimization…" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:rgba(0,0,0,0.4);color:#fff;"/>
-                        <button id="ai-send" class="btn btn-secondary">Send</button>
-                    </div>
-                `;
-                document.body.appendChild(chat);
-                document.getElementById('ai-close').onclick = () => { chat.style.display = 'none'; };
-                document.getElementById('ai-send').onclick = async () => {
-                    const box = document.getElementById('ai-messages');
-                    const input = document.getElementById('ai-input');
-                    const q = input.value.trim();
-                    if (!q) return;
-                    box.innerHTML += `<div><strong>You</strong>: ${q}</div>`;
-                    input.value = '';
-                    box.innerHTML += `<div>AI is typing…</div>`;
-                    box.scrollTop = box.scrollHeight;
-                    try {
-                        const resp = await fetch('/api/ai/advice', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question:q})});
-                        const data = await resp.json();
-                        if (data.advice) {
-                            box.innerHTML += `<div style="margin-top:6px;color:#ddd;"><strong>AI</strong>: ${data.advice.replace(/\\n/g,'<br>')}</div>`;
-                        } else {
-                            box.innerHTML += `<div style="color:#f66;">Error: ${data.error||'Unknown'}</div>`;
-                        }
-                    } catch(e) {
-                        box.innerHTML += `<div style="color:#f66;">Request failed</div>`;
-                    }
-                    box.scrollTop = box.scrollHeight;
-                };
-            }
-            chat.style.display = 'flex';
-            const box = document.getElementById('ai-messages');
-            box.innerHTML = 'Loading latest summary…';
-            try {
-                const resp = await fetch('/api/ai/advice');
-                const data = await resp.json();
+    }
+
+    // ==========================================
+    // CHATBOT FUNCTIONS
+    // ==========================================
+    function toggleChatbot() {
+        const launcher = document.getElementById('chatbot-launcher');
+        const win = document.getElementById('chatbot-window');
+        if (win.style.display === 'flex') {
+            win.style.display = 'none';
+            launcher.style.display = 'flex';
+        } else {
+            win.style.display = 'flex';
+            launcher.style.display = 'none';
+            const box = document.getElementById('chat-messages');
+            box.innerHTML = '<div class="msg ai">Loading summary…</div>';
+            fetch('/api/ai/advice').then(r=>r.json()).then(data=>{
                 if (data.advice) {
-                    box.innerHTML = `<div style="color:#ddd;">${data.advice.replace(/\\n/g,'<br>')}</div>`;
+                    box.innerHTML = `<div class=\"msg ai\">${data.advice.replace(/\\n/g,'<br>')}</div>`;
                 } else {
-                    box.innerHTML = `<div style="color:#f66;">${data.error||'No response'}</div>`;
+                    box.innerHTML = `<div class=\"msg ai\" style=\"color:#f66;\">${data.error||'No response'}</div>`;
                 }
-            } catch(e) {
-                box.innerHTML = '<div style="color:#f66;">AI request failed.</div>'
-            }
+            }).catch(()=>{
+                box.innerHTML = '<div class="msg ai" style="color:#f66;">AI request failed.</div>';
+            });
         }
+    }
+
+    function sendChatMessage() {
+        const input = document.getElementById('chat-input');
+        const text = (input.value||'').trim();
+        if (!text) return;
+        const box = document.getElementById('chat-messages');
+        box.innerHTML += `<div class=\"msg user\"><strong>You:</strong> ${text}</div>`;
+        box.innerHTML += `<div class=\"typing\">AI is typing…</div>`;
+        const typingRef = box.querySelector('.typing');
+        input.value = '';
+        fetch('/api/ai/advice', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question:text})})
+        .then(r=>r.json()).then(data=>{
+            if (typingRef) typingRef.remove();
+            if (data.advice) {
+                box.innerHTML += `<div class=\"msg ai\"><strong>AI:</strong> ${data.advice.replace(/\\n/g,'<br>')}</div>`;
+            } else {
+                box.innerHTML += `<div class=\"msg ai\" style=\"color:#f66;\"><strong>AI:</strong> ${data.error||'No response'}</div>`;
+            }
+            box.scrollTop = box.scrollHeight;
+        }).catch(()=>{
+            if (typingRef) typingRef.remove();
+            box.innerHTML += '<div class="msg ai" style="color:#f66;"><strong>AI:</strong> Request failed</div>';
+        });
+    }
+
+    // ==========================================
+    // INITIALIZATION
+    // ==========================================
+    map.on('load', () => {
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes pulse {
+                0%, 100% { transform: scale(1); opacity: 0.9; }
+                50% { transform: scale(1.2); opacity: 1; }
+            }
+            
+            .vehicle-marker-ultra {
+                will-change: transform;
+                backface-visibility: hidden;
+                -webkit-backface-visibility: hidden;
+                transform: translateZ(0);
+                -webkit-transform: translateZ(0);
+            }
+            
+            .mapboxgl-canvas {
+                image-rendering: optimizeSpeed;
+                image-rendering: -webkit-optimize-contrast;
+            }
+            
+            * {
+                -webkit-font-smoothing: antialiased;
+                -moz-osx-font-smoothing: grayscale;
+            }
+        `;
+        document.head.appendChild(style);
+        
+        initializeRenderers();
+        initializeEVStationLayer();
+        
+        updateLoop();
+        requestAnimationFrame(animationLoop);
+        
+        setInterval(updateTime, 1000);
+        updateTime();
+        
         setInterval(updateMLDashboard, 5000);
         updateMLDashboard();
-        async function showBaselines() {
-            const r = await fetch('/api/ml/baselines');
-            const data = await r.json();
-            const resultsDiv = document.getElementById('ml-results');
-            if (!resultsDiv) return;
-            resultsDiv.style.display = 'block';
-            if (data.method_comparison) {
-                const rows = Object.entries(data.method_comparison)
-                  .map(([k,v]) => `${k}: MAPE ${v.MAPE}%, Runtime ${v.Runtime_ms}ms, Savings ${v.Cost_Savings}%`)
-                  .join('<br>');
-                resultsDiv.innerHTML = '<strong>📐 Baselines:</strong><br>' + rows;
-            } else {
-                resultsDiv.textContent = 'No baseline data available.';
-            }
-        }
-        async function downloadExecutiveReport() {
-            try {
-                const r = await fetch('/api/ai/report');
-                const data = await r.json();
-                if (!data.report) return alert(data.error || 'Report failed');
-                const blob = new Blob([data.report], {type: 'text/markdown'});
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `Executive_Report_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'_')}.md`;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                URL.revokeObjectURL(url);
-            } catch (e) {
-                alert('Report generation failed');
-            }
-        }
+        
+        console.log('🚀 Ultra-smooth vehicle system initialized!');
+        console.log('Performance mode:', PERFORMANCE_CONFIG.renderMode);
+        console.log('Target FPS:', PERFORMANCE_CONFIG.targetFPS);
+    });
+
+    let resizeTimeout;
+    window.addEventListener('resize', () => {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(() => {
+            map.resize();
+        }, 100);
+    });
     </script>
 </body>
 </html>
