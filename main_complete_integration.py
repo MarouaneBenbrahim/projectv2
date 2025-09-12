@@ -1284,6 +1284,10 @@ HTML_COMPLETE_TEMPLATE = '''
     <!-- Mapbox GL JS -->
     <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet">
     <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+    <!-- Typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
     
     <style>
         * {
@@ -1293,7 +1297,7 @@ HTML_COMPLETE_TEMPLATE = '''
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #0a0a0a;
             color: #fff;
             overflow: hidden;
@@ -1322,21 +1326,39 @@ HTML_COMPLETE_TEMPLATE = '''
             font-size: 14px !important;
         }
         
-        /* Control Panel */
+        /* Control Panel - World Class Design */
         .control-panel {
             position: absolute;
             top: 20px;
             left: 20px;
-            width: 440px;
-            background: linear-gradient(135deg, rgba(15,15,25,0.98), rgba(25,25,45,0.95));
-            border-radius: 16px;
-            padding: 24px;
-            backdrop-filter: blur(20px);
-            border: 1px solid rgba(100,200,255,0.2);
-            box-shadow: 0 20px 60px rgba(0,0,0,0.8);
+            width: 460px;
+            background: linear-gradient(145deg, rgba(10,12,20,0.98), rgba(20,25,40,0.96));
+            border-radius: 20px;
+            padding: 28px;
+            backdrop-filter: blur(30px);
+            border: 1px solid rgba(100,200,255,0.25);
+            box-shadow: 0 25px 80px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.05);
             z-index: 1000;
             max-height: 90vh;
             overflow-y: auto;
+        }
+        
+        .control-panel::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        .control-panel::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.02);
+            border-radius: 4px;
+        }
+        
+        .control-panel::-webkit-scrollbar-thumb {
+            background: rgba(100,200,255,0.3);
+            border-radius: 4px;
+        }
+        
+        .control-panel::-webkit-scrollbar-thumb:hover {
+            background: rgba(100,200,255,0.5);
         }
         
         h1 {
@@ -1409,13 +1431,32 @@ HTML_COMPLETE_TEMPLATE = '''
             border-radius: 50%;
         }
         
-        /* Vehicle Control Section */
+        /* Vehicle Control Section - World Class */
         .vehicle-control {
             margin: 20px 0;
-            padding: 16px;
-            background: rgba(0,170,255,0.1);
-            border-radius: 12px;
-            border: 1px solid rgba(0,170,255,0.3);
+            padding: 18px;
+            background: linear-gradient(135deg, rgba(0,170,255,0.08), rgba(0,120,255,0.12));
+            border-radius: 14px;
+            border: 1px solid rgba(0,170,255,0.35);
+            box-shadow: 0 4px 20px rgba(0,170,255,0.1), inset 0 1px 0 rgba(255,255,255,0.03);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .vehicle-control::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(0,255,255,0.5), transparent);
+            animation: shimmer 3s infinite;
+        }
+        
+        @keyframes shimmer {
+            0%, 100% { transform: translateX(-100%); }
+            50% { transform: translateX(100%); }
         }
         
         .vehicle-control h3 {
@@ -1710,9 +1751,149 @@ HTML_COMPLETE_TEMPLATE = '''
             margin: 20px 0 12px 0;
             color: rgba(255,255,255,0.8);
         }
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 6px 0 14px 0;
+        }
+        .tab-btn {
+            text-decoration: none;
+            font-size: 11px;
+            padding: 8px 12px;
+            border-radius: 20px;
+            color: rgba(255,255,255,0.8);
+            border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.04);
+            cursor: pointer;
+            transition: all .2s ease;
+        }
+        .tab-btn:hover { background: rgba(255,255,255,0.12); }
+        .tab-btn.active {
+            color: #0a0a0a;
+            background: linear-gradient(135deg, #00ff88, #00aaff);
+            border-color: transparent;
+        }
+        /* Tab content visibility using body[data-tab] */
+        .tab { display: none; }
+        body[data-tab="overview"] .tab-overview,
+        body[data-tab="vehicles"] .tab-vehicles,
+        body[data-tab="ml"] .tab-ml,
+        body[data-tab="substations"] .tab-substations,
+        body[data-tab="layers"] .tab-layers { display: block; }
+        /* Legend chips to exactly match map symbology */
+        .legend-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+        .legend-row { display: flex; align-items: center; gap: 10px; font-size: 12px; color: rgba(255,255,255,0.8); }
+        .chip-line { width: 28px; height: 4px; border-radius: 2px; box-shadow: 0 0 10px currentColor; }
+        .chip-circle { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid #fff; }
+        .chip-dot { font-size: 16px; line-height: 1; }
+        .chip-stack { position: relative; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
+        .chip-stack .base { position: absolute; width: 16px; height: 16px; border-radius: 50%; background: #00ff88; border: 2px solid #ffffff; box-shadow: 0 0 10px rgba(0,255,136,0.5); }
+        .chip-stack .icon { position: relative; font-size: 14px; }
+        .badge { display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px; padding:0 6px; border-radius:10px; font-size:10px; font-weight:700; background: rgba(255,255,255,0.12); color:#fff; border:1px solid rgba(255,255,255,0.2); }
+        .badge-accent { background: linear-gradient(135deg, #00ff88, #00aaff); color:#00110a; border: none; }
+        /* Car icon for legend matching top-down vehicle shape */
+        .legend-car { display:inline-flex; width:22px; height:14px; align-items:center; justify-content:center; }
+        .legend-car svg { width: 22px; height: 14px; }
+        .legend-car rect { fill: currentColor; stroke: #000; stroke-width: 1.2px; }
+        /* World-class polish additions */
+        .panel-header {
+            position: sticky;
+            top: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            background: linear-gradient(145deg, rgba(10,12,20,0.98), rgba(20,25,40,0.96));
+            z-index: 10;
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 800;
+            letter-spacing: .3px;
+            color: #e7f7ff;
+        }
+        .brand-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #00ff88, #00aaff);
+            box-shadow: 0 0 12px rgba(0,255,136,0.6);
+        }
+        .icon-btn {
+            background: rgba(255,255,255,0.08);
+            color: #fff;
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 10px;
+            padding: 8px 10px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all .2s ease;
+        }
+        .icon-btn:hover {
+            background: rgba(255,255,255,0.14);
+            transform: translateY(-1px);
+        }
+        .panel-nav {
+            position: sticky;
+            top: 52px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 6px 0 14px 0;
+        }
+        .panel-nav a {
+            text-decoration: none;
+            font-size: 11px;
+            padding: 6px 10px;
+            border-radius: 20px;
+            color: rgba(255,255,255,0.8);
+            border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.04);
+            transition: all .2s ease;
+        }
+        .panel-nav a:hover {
+            color: #0a0a0a;
+            background: linear-gradient(135deg, #00ff88, #00aaff);
+            border-color: transparent;
+        }
+        .control-panel.collapsed {
+            width: 68px;
+            padding: 16px;
+        }
+        .control-panel.collapsed h1,
+        .control-panel.collapsed .subtitle,
+        .control-panel.collapsed .panel-nav,
+        .control-panel.collapsed .stats-grid,
+        .control-panel.collapsed .light-stats,
+        .control-panel.collapsed .vehicle-control,
+        .control-panel.collapsed .ml-dashboard,
+        .control-panel.collapsed .section-title,
+        .control-panel.collapsed #substation-controls,
+        .control-panel.collapsed .layer-controls {
+            display: none !important;
+        }
     </style>
 </head>
 <body>
+    <script>
+        function togglePanel(){
+            const panel = document.querySelector('.control-panel');
+            panel.classList.toggle('collapsed');
+            const btn = document.getElementById('panel-toggle');
+            if(btn){ btn.textContent = panel.classList.contains('collapsed') ? '›' : '—'; }
+        }
+        function selectTab(tab, el){
+            document.body.setAttribute('data-tab', tab);
+            document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+            if (el) el.classList.add('active');
+        }
+    </script>
     <!-- Chatbot launcher -->
     <div id="chatbot-launcher" class="chatbot-launcher" title="Ask AI" onclick="toggleChatbot()">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1735,11 +1916,22 @@ HTML_COMPLETE_TEMPLATE = '''
     
     <!-- Control Panel -->
     <div class="control-panel">
+        <div class="panel-header">
+            <div class="brand"><span class="brand-dot"></span> Manhattan Grid</div>
+            <button id="panel-toggle" class="icon-btn" onclick="togglePanel()" title="Collapse panel">—</button>
+        </div>
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="overview" onclick="selectTab('overview', this)">Overview</button>
+            <button class="tab-btn" data-tab="vehicles" onclick="selectTab('vehicles', this)">Vehicles</button>
+            <button class="tab-btn" data-tab="ml" onclick="selectTab('ml', this)">ML</button>
+            <button class="tab-btn" data-tab="substations" onclick="selectTab('substations', this)">Substations</button>
+            <button class="tab-btn" data-tab="layers" onclick="selectTab('layers', this)">Layers</button>
+        </div>
         <h1>Manhattan Power Grid</h1>
         <div class="subtitle">Complete Integration: Power + Traffic + Vehicles</div>
         
         <!-- Main Statistics -->
-        <div class="stats-grid">
+        <div id="section-stats" class="stats-grid tab tab-overview">
             <div class="stat-card">
                 <div class="stat-value" id="traffic-lights" style="color: #ffaa00;">0</div>
                 <div class="stat-label">Traffic Lights</div>
@@ -1759,7 +1951,7 @@ HTML_COMPLETE_TEMPLATE = '''
         </div>
         
         <!-- Traffic Light Color Distribution -->
-        <div class="light-stats">
+        <div class="light-stats tab tab-overview">
             <div class="light-stat">
                 <div class="light-dot" style="background: #00ff00;"></div>
                 <span id="green-count">0</span> Green
@@ -1779,7 +1971,7 @@ HTML_COMPLETE_TEMPLATE = '''
         </div>
         
         <!-- Vehicle Control -->
-        <div class="vehicle-control">
+        <div id="section-vehicles" class="vehicle-control tab tab-vehicles">
             <h3>🚗 Vehicle Simulation Control</h3>
             
             <div class="vehicle-stats">
@@ -1790,6 +1982,10 @@ HTML_COMPLETE_TEMPLATE = '''
                 <div class="vehicle-stat">
                     <div class="vehicle-stat-value" id="ev-count">0</div>
                     <div class="vehicle-stat-label">EVs</div>
+                </div>
+                <div class="vehicle-stat">
+                    <div class="vehicle-stat-value" id="vehicles-charging-count" style="color: #00ffff;">0</div>
+                    <div class="vehicle-stat-label">Charging</div>
                 </div>
             </div>
             
@@ -1817,7 +2013,7 @@ HTML_COMPLETE_TEMPLATE = '''
         </div>
         
         <!-- Machine Learning Analytics -->
-        <div class="ml-dashboard" style="margin: 20px 0; padding: 18px; background: linear-gradient(145deg, rgba(30, 20, 50, 0.95), rgba(20, 15, 35, 0.95)); border-radius: 16px; border: 1px solid rgba(138, 43, 226, 0.35); box-shadow: 0 18px 50px rgba(0,0,0,0.6);">
+        <div id="section-ml" class="ml-dashboard tab tab-ml" style="margin: 20px 0; padding: 18px; background: linear-gradient(145deg, rgba(30, 20, 50, 0.95), rgba(20, 15, 35, 0.95)); border-radius: 16px; border: 1px solid rgba(138, 43, 226, 0.35); box-shadow: 0 18px 50px rgba(0,0,0,0.6);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
                 <h3 style="font-size: 16px; color: #c8a2ff; letter-spacing: .2px;">🧠 Machine Learning Analytics</h3>
                 <div style="font-size:11px;color:rgba(255,255,255,0.6);">Updated <span id="ml-updated">–</span></div>
@@ -1847,13 +2043,13 @@ HTML_COMPLETE_TEMPLATE = '''
                 <button class="btn btn-secondary" onclick="showBaselines()">📐 Baselines</button>
                 <button class="btn btn-secondary" onclick="downloadExecutiveReport()">📄 Executive Report</button>
             </div>
-            <div id="ml-results" style="margin-top: 12px; padding: 10px; background: rgba(0,0,0,0.35); border-radius: 10px; font-size: 12px; display: none; border:1px solid rgba(255,255,255,0.06);"></div>
+            <div id="ml-results" style="margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.35); border-radius: 12px; font-size: 12px; display: none; border:1px solid rgba(255,255,255,0.12);"></div>
         </div>
         
         <!-- Substation Controls -->
-        <div class="section-title">🏭 Substation Control</div>
-        <div class="substation-grid" id="substation-controls"></div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
+        <div id="section-substations" class="section-title tab tab-substations">🏭 Substation Control</div>
+        <div class="substation-grid tab tab-substations" id="substation-controls"></div>
+        <div class="tab tab-substations" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
             <button class="btn btn-danger" onclick="triggerBlackout()">⚠️ BLACKOUT</button>
             <button class="btn btn-primary" onclick="restoreAll()">🔧 Restore All</button>
         </div>
@@ -1861,7 +2057,7 @@ HTML_COMPLETE_TEMPLATE = '''
         <!-- Action Buttons -->
         
         <!-- Layer Controls -->
-        <div class="layer-controls">
+        <div id="section-layers" class="layer-controls tab tab-layers">
             <div class="section-title">👁️ Visualization Layers</div>
             
             <div class="layer-item">
@@ -1916,7 +2112,7 @@ HTML_COMPLETE_TEMPLATE = '''
             🚗 <span id="vehicle-count">0</span> vehicles
         </div>
         <div class="status-item">
-            ⚡ <span id="charging-stations">0</span> charging
+            ⚡ <span id="charging-stations">0</span> EVs charging
         </div>
         <div class="status-item">
             📊 <span id="total-load">0</span> MW
@@ -1935,36 +2131,76 @@ HTML_COMPLETE_TEMPLATE = '''
         </div>
     </div>
     
-    <!-- Legend -->
-    <div class="legend">
-        <div class="legend-title">System Components</div>
-        <div class="legend-item">
-            <div class="legend-color" style="background: #ff0066; height: 8px;"></div>
-            <span>Substations (138kV)</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background: #00ff88;"></div>
-            <span>Primary (13.8kV)</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background: #ffaa00;"></div>
-            <span>Service (480V)</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-circle" style="background: #00ff00;"></div>
-            <span>Electric Vehicle</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-circle" style="background: #6464ff;"></div>
-            <span>Gas Vehicle</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-circle" style="background: #ffa500;"></div>
-            <span>Charging EV</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-color" style="background: #00aaff; height: 8px;"></div>
-            <span>EV Stations</span>
+    <!-- Legend - Enhanced Design -->
+    <div class="legend" style="background: linear-gradient(145deg, rgba(10,12,20,0.98), rgba(20,25,40,0.96)); border: 1px solid rgba(100,200,255,0.25); box-shadow: 0 15px 50px rgba(0,0,0,0.8);">
+        <div class="legend-title" style="font-weight: 700; color: #00ff88; margin-bottom: 14px;">System Components</div>
+        <div class="legend-grid">
+            <div style="font-size: 11px; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 1px;">Infrastructure</div>
+            <div class="legend-row">
+                <span class="chip-dot" style="font-size:18px;">▲</span>
+                <span>Substations</span>
+                <span id="legend-substations" class="badge">0</span>
+            </div>
+            <div class="legend-row">
+                <span class="chip-stack">
+                    <span class="base"></span>
+                    <span class="icon">⚡</span>
+                </span>
+                <span>EV Charging Stations</span>
+                <span id="legend-ev" class="badge">0</span>
+            </div>
+            <div class="legend-row">
+                <span class="chip-line" style="color:#00ffcc; background:#00ffcc;"></span>
+                <span>Primary Cables (13.8kV)</span>
+            </div>
+            <div class="legend-row">
+                <span class="chip-line" style="color:#ffbb44; background:#ffbb44;"></span>
+                <span>Service Cables (480V)</span>
+            </div>
+            <div style="font-size: 11px; color: rgba(255,255,255,0.6); margin-top: 6px; text-transform: uppercase; letter-spacing: 1px;">Vehicles</div>
+            <div class="legend-row">
+                <span class="legend-car" style="color:#00ff00;" title="EV High Battery (>=50%)">
+                    <svg viewBox="0 0 22 14" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" rx="2" ry="2" width="20" height="10"/></svg>
+                </span>
+                <span>EV High (≥50%)</span>
+                <span id="legend-ev-high" class="badge">0</span>
+            </div>
+            <div class="legend-row">
+                <span class="legend-car" style="color:#ffaa00;" title="EV Medium (20–49%)">
+                    <svg viewBox="0 0 22 14" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" rx="2" ry="2" width="20" height="10"/></svg>
+                </span>
+                <span>EV Medium (20–49%)</span>
+                <span id="legend-ev-medium" class="badge">0</span>
+            </div>
+            <div class="legend-row">
+                <span class="legend-car" style="color:#ff0000;" title="EV Low (<20%)">
+                    <svg viewBox="0 0 22 14" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" rx="2" ry="2" width="20" height="10"/></svg>
+                </span>
+                <span>EV Low (<20%)</span>
+                <span id="legend-ev-low" class="badge">0</span>
+            </div>
+            <div class="legend-row">
+                <span class="legend-car" style="color:#ffffff;" title="Gas Vehicle">
+                    <svg viewBox="0 0 22 14" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="2" rx="2" ry="2" width="20" height="10"/></svg>
+                </span>
+                <span>Gas Vehicle</span>
+                <span id="legend-vehicles-gas" class="badge">0</span>
+            </div>
+            <div class="legend-row">
+                <span class="chip-dot" style="color:#00ff00;">⬤</span>
+                <span>Lights Green</span>
+                <span id="legend-green" class="badge">0</span>
+            </div>
+            <div class="legend-row">
+                <span class="chip-dot" style="color:#ffff00;">⬤</span>
+                <span>Lights Yellow</span>
+                <span id="legend-yellow" class="badge">0</span>
+            </div>
+            <div class="legend-row">
+                <span class="chip-dot" style="color:#ff0000;">⬤</span>
+                <span>Lights Red</span>
+                <span id="legend-red" class="badge">0</span>
+            </div>
         </div>
     </div>
     
@@ -1998,9 +2234,9 @@ HTML_COMPLETE_TEMPLATE = '''
         container: 'map',
         style: 'mapbox://styles/mapbox/dark-v11',
         center: [-73.980, 40.758],
-        zoom: 14,
-        pitch: 45,
-        bearing: -20,
+        zoom: 14.5,
+        pitch: 0,
+        bearing: 0,
         antialias: true,
         preserveDrawingBuffer: PERFORMANCE_CONFIG.enableDebugMode,
         refreshExpiredTiles: false,
@@ -2045,42 +2281,58 @@ HTML_COMPLETE_TEMPLATE = '''
                     
                     const vertexShader = `
                         attribute vec2 a_position;
+                        attribute vec2 a_offset;
                         attribute vec3 a_color;
-                        attribute float a_size;
+                        attribute float a_angle;
+                        attribute float a_scale;
                         
                         uniform mat4 u_matrix;
                         uniform float u_zoom;
                         
                         varying vec3 v_color;
+                        varying vec2 v_offset;
                         
                         void main() {
-                            float size = a_size * pow(2.0, u_zoom - 14.0);
-                            gl_Position = u_matrix * vec4(a_position, 0.0, 1.0);
-                            gl_PointSize = size;
+                            float size = a_scale * 1.6;  // Larger and more visible vehicles
+                            
+                            // Create rectangle vertices
+                            vec2 rotatedOffset = vec2(
+                                a_offset.x * cos(a_angle) - a_offset.y * sin(a_angle),
+                                a_offset.x * sin(a_angle) + a_offset.y * cos(a_angle)
+                            );
+                            
+                            vec2 worldPos = a_position + rotatedOffset * size * 0.0000005;
+                            gl_Position = u_matrix * vec4(worldPos, 0.0, 1.0);
                             v_color = a_color;
+                            v_offset = rotatedOffset; // pass model-space offset for stroke calc
                         }
                     `;
                     
                     const fragmentShader = `
                         precision mediump float;
                         varying vec3 v_color;
+                        varying vec2 v_offset;
+                        
+                        // Half-size of our rectangle in model units (matches rectangleVertices)
+                        const float halfWidth = 0.5;
+                        const float halfHeight = 1.0;
+                        
+                        // Thickness of the black border in model units
+                        const float borderWidth = 0.08;
                         
                         void main() {
-                            vec2 coord = 2.0 * gl_PointCoord - 1.0;
-                            float dist = length(coord);
+                            // Compute distance to nearest edge in model space
+                            float dx = halfWidth - abs(v_offset.x);
+                            float dy = halfHeight - abs(v_offset.y);
+                            float edgeDist = min(dx, dy);
                             
-                            if (dist > 1.0) {
-                                discard;
+                            // If we are within the border band, draw black; else fill color
+                            if (edgeDist < borderWidth) {
+                                gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                            } else {
+                                vec3 boosted = min(v_color * 1.6, vec3(1.0));
+                                gl_FragColor = vec4(boosted, 1.0);
                             }
-                            
-                            float alpha = 1.0 - smoothstep(0.5, 1.0, dist);
-                            vec3 color = v_color;
-                            
-                            if (dist < 0.7) {
-                                color = mix(color, vec3(1.0), 0.3 * (1.0 - dist));
-                            }
-                            
-                            gl_FragColor = vec4(color, alpha);
                         }
                     `;
                     
@@ -2094,8 +2346,10 @@ HTML_COMPLETE_TEMPLATE = '''
                     
                     this.attributes = {
                         position: gl.getAttribLocation(this.program, 'a_position'),
+                        offset: gl.getAttribLocation(this.program, 'a_offset'),
                         color: gl.getAttribLocation(this.program, 'a_color'),
-                        size: gl.getAttribLocation(this.program, 'a_size')
+                        angle: gl.getAttribLocation(this.program, 'a_angle'),
+                        scale: gl.getAttribLocation(this.program, 'a_scale')
                     };
                     
                     this.uniforms = {
@@ -2105,14 +2359,29 @@ HTML_COMPLETE_TEMPLATE = '''
                     
                     this.buffers = {
                         position: gl.createBuffer(),
+                        offset: gl.createBuffer(),
                         color: gl.createBuffer(),
-                        size: gl.createBuffer()
+                        angle: gl.createBuffer(),
+                        scale: gl.createBuffer()
                     };
                     
+                    // Rectangle geometry (width = 2, height = 1 for car-like shape)
+                    this.rectangleVertices = new Float32Array([
+                        -0.5, -1.0,  // Bottom left
+                        0.5, -1.0,  // Bottom right  
+                        0.5,  1.0,  // Top right
+                        -0.5, -1.0,  // Bottom left
+                        0.5,  1.0,  // Top right
+                        -0.5,  1.0   // Top left
+                    ]);
+                    
+                    const maxVehicles = PERFORMANCE_CONFIG.vehiclePoolSize;
                     this.arrays = {
-                        positions: new Float32Array(PERFORMANCE_CONFIG.vehiclePoolSize * 2),
-                        colors: new Float32Array(PERFORMANCE_CONFIG.vehiclePoolSize * 3),
-                        sizes: new Float32Array(PERFORMANCE_CONFIG.vehiclePoolSize)
+                        positions: new Float32Array(maxVehicles * 12), // 6 vertices * 2 coords
+                        offsets: new Float32Array(maxVehicles * 12),   // 6 vertices * 2 coords
+                        colors: new Float32Array(maxVehicles * 18),    // 6 vertices * 3 color components
+                        angles: new Float32Array(maxVehicles * 6),     // 6 vertices * 1 angle
+                        scales: new Float32Array(maxVehicles * 6)      // 6 vertices * 1 scale
                     };
                 },
                 
@@ -2125,30 +2394,57 @@ HTML_COMPLETE_TEMPLATE = '''
                     gl.uniformMatrix4fv(this.uniforms.matrix, false, matrix);
                     gl.uniform1f(this.uniforms.zoom, this.map.getZoom());
                     
-                    let index = 0;
+                    let vehicleIndex = 0;
                     for (const [id, vehicle] of this.vehicles) {
+                        if (vehicleIndex >= PERFORMANCE_CONFIG.vehiclePoolSize) break;
+                        
                         const pos = this.getInterpolatedPosition(vehicle);
                         const projected = mapboxgl.MercatorCoordinate.fromLngLat([pos.lon, pos.lat]);
                         
-                        this.arrays.positions[index * 2] = projected.x;
-                        this.arrays.positions[index * 2 + 1] = projected.y;
-                        
                         const color = this.getVehicleColor(vehicle.data);
-                        this.arrays.colors[index * 3] = color.r;
-                        this.arrays.colors[index * 3 + 1] = color.g;
-                        this.arrays.colors[index * 3 + 2] = color.b;
                         
-                        this.arrays.sizes[index] = vehicle.scale * 20;
-                        index++;
+                        // Calculate angle based on movement direction
+                        let angle = vehicle.angle || 0;
+                        
+                        // Fill data for 6 vertices (2 triangles forming a rectangle)
+                        for (let v = 0; v < 6; v++) {
+                            const idx = vehicleIndex * 6 + v;
+                            
+                            // Position (same for all vertices of this vehicle)
+                            this.arrays.positions[idx * 2] = projected.x;
+                            this.arrays.positions[idx * 2 + 1] = projected.y;
+                            
+                            // Offset (rectangle shape)
+                            this.arrays.offsets[idx * 2] = this.rectangleVertices[v * 2];
+                            this.arrays.offsets[idx * 2 + 1] = this.rectangleVertices[v * 2 + 1];
+                            
+                            // Color
+                            this.arrays.colors[idx * 3] = color.r;
+                            this.arrays.colors[idx * 3 + 1] = color.g;
+                            this.arrays.colors[idx * 3 + 2] = color.b;
+                            
+                            // Angle
+                            this.arrays.angles[idx] = angle;
+                            
+                            // Scale (slightly larger for better visibility)
+                            this.arrays.scales[idx] = (vehicle.scale || 1) * 1.05;
+                        }
+                        
+                        vehicleIndex++;
                     }
                     
-                    this.updateBuffer(gl, this.buffers.position, this.arrays.positions, this.attributes.position, 2, index);
-                    this.updateBuffer(gl, this.buffers.color, this.arrays.colors, this.attributes.color, 3, index);
-                    this.updateBuffer(gl, this.buffers.size, this.arrays.sizes, this.attributes.size, 1, index);
+                    const vertexCount = vehicleIndex * 6;
+                    
+                    // Update buffers
+                    this.updateBuffer(gl, this.buffers.position, this.arrays.positions, this.attributes.position, 2, vertexCount);
+                    this.updateBuffer(gl, this.buffers.offset, this.arrays.offsets, this.attributes.offset, 2, vertexCount);
+                    this.updateBuffer(gl, this.buffers.color, this.arrays.colors, this.attributes.color, 3, vertexCount);
+                    this.updateBuffer(gl, this.buffers.angle, this.arrays.angles, this.attributes.angle, 1, vertexCount);
+                    this.updateBuffer(gl, this.buffers.scale, this.arrays.scales, this.attributes.scale, 1, vertexCount);
                     
                     gl.enable(gl.BLEND);
                     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-                    gl.drawArrays(gl.POINTS, 0, index);
+                    gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
                     gl.disable(gl.BLEND);
                     
                     this.stats.renderTime = performance.now() - startTime;
@@ -2243,13 +2539,16 @@ HTML_COMPLETE_TEMPLATE = '''
                         vehicle.lastUpdateTime = currentTime;
                         
                         // Update angle
+                        // Update angle - correct for map orientation
+                       // Update angle - align with movement direction
                         const dx = vehicle.targetLon - vehicle.previousLon;
                         const dy = vehicle.targetLat - vehicle.previousLat;
                         if (Math.abs(dx) > 0.00001 || Math.abs(dy) > 0.00001) {
-                            vehicle.angle = Math.atan2(dy, dx);
+                            // Calculate angle in radians
+                            // Add PI/2 to rotate from east-pointing to north-pointing
+                            vehicle.angle = Math.atan2(dx, dy) + Math.PI;
                         }
                     }
-                    
                     vehicle.data = data;
                 }
             });
@@ -2397,11 +2696,11 @@ HTML_COMPLETE_TEMPLATE = '''
                 el.className = 'vehicle-marker-ultra';
                 el.style.cssText = `
                     position: absolute;
-                    width: 12px;
-                    height: 12px;
+                    width: 14px;
+                    height: 14px;
                     border-radius: 50%;
-                    border: 2px solid rgba(255,255,255,0.9);
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+                    border: 2.5px solid rgba(255,255,255,0.95);
+                    box-shadow: 0 3px 10px rgba(0,0,0,0.55);
                     will-change: transform;
                     transform: translate(-50%, -50%);
                     transition: transform 0.05s linear;
@@ -2545,8 +2844,11 @@ HTML_COMPLETE_TEMPLATE = '''
             }
             
             // Trigger map repaint for WebGL rendering
-            if (PERFORMANCE_CONFIG.renderMode === 'webgl') {
-                this.map.triggerRepaint();
+           if (PERFORMANCE_CONFIG.renderMode === 'webgl') {
+                // Check if layer already exists before adding
+                if (!this.map.getLayer('vehicle-webgl-layer')) {
+                    this.map.addLayer(this.customLayer);
+                }
             }
         }
         
@@ -2583,7 +2885,9 @@ HTML_COMPLETE_TEMPLATE = '''
     let networkState = null;
     let vehicleRenderer = null;
     let substationMarkers = {};
+    let substationLayerInitialized = false;
     let evStationLayerInitialized = false;
+    let vehicleClickLayerInitialized = false;
     let lightsClickBound = false;
     let layers = {
         lights: true,
@@ -2698,6 +3002,8 @@ HTML_COMPLETE_TEMPLATE = '''
                 
                 renderNetwork();
                 renderEVStations();
+                renderVehicleClicks();
+                updateVehicleSymbolLayer();
             }
         } catch (error) {
             console.error('Error fetching data:', error);
@@ -2748,7 +3054,12 @@ HTML_COMPLETE_TEMPLATE = '''
                 'yellow-count': stats.yellow_lights || 0,
                 'red-count': stats.red_lights || 0,
                 'black-count': stats.black_lights || 0,
-                'total-load': Math.round(stats.total_load_mw)
+                'total-load': Math.round(stats.total_load_mw),
+                'legend-substations': stats.total_substations || 0,
+                'legend-ev': stats.total_ev_stations || 0,
+                'legend-green': stats.green_lights || 0,
+                'legend-yellow': stats.yellow_lights || 0,
+                'legend-red': stats.red_lights || 0
             };
             
             Object.entries(updates).forEach(([id, value]) => {
@@ -2761,8 +3072,55 @@ HTML_COMPLETE_TEMPLATE = '''
                 document.getElementById('active-vehicles').textContent = active;
                 document.getElementById('ev-count').textContent = networkState.vehicle_stats.ev_vehicles || 0;
                 document.getElementById('vehicle-count').textContent = active;
-                document.getElementById('charging-stations').textContent = 
-                    `${networkState.vehicle_stats.vehicles_charging || 0}/${networkState.vehicle_stats.vehicles_queued || 0}`;
+                const chargingCount = networkState.vehicle_stats.vehicles_charging || 0;
+                document.getElementById('charging-stations').textContent = chargingCount;
+                document.getElementById('vehicles-charging-count').textContent = chargingCount;
+                // Legend vehicle split
+                const evNum = networkState.vehicle_stats.ev_vehicles || 0;
+                const gasNum = Math.max(0, active - evNum);
+                const lev = document.getElementById('legend-vehicles-ev');
+                if (lev) lev.textContent = evNum;
+                const lgv = document.getElementById('legend-vehicles-gas');
+                if (lgv) lgv.textContent = gasNum;
+                // EV battery distribution if vehicle details exist
+                if (networkState.vehicles) {
+                    let high=0, med=0, low=0;
+                    networkState.vehicles.forEach(v=>{
+                        if (v.is_ev) {
+                            const b = v.battery_percent != null ? v.battery_percent : 100;
+                            if (b < 20) low++; else if (b < 50) med++; else high++;
+                        }
+                    });
+                    const leh = document.getElementById('legend-ev-high'); if (leh) leh.textContent = high;
+                    const lem = document.getElementById('legend-ev-medium'); if (lem) lem.textContent = med;
+                    const lel = document.getElementById('legend-ev-low'); if (lel) lel.textContent = low;
+                }
+            } else if (networkState.vehicles) {
+                // Fallback: count from vehicles array
+                const active = networkState.vehicles.length;
+                const evs = networkState.vehicles.filter(v => v.is_ev).length;
+                const charging = networkState.vehicles.filter(v => v.is_charging).length;
+                document.getElementById('active-vehicles').textContent = active;
+                document.getElementById('ev-count').textContent = evs;
+                document.getElementById('vehicle-count').textContent = active;
+                document.getElementById('charging-stations').textContent = charging;
+                document.getElementById('vehicles-charging-count').textContent = charging;
+                // Legend vehicle split
+                const lev = document.getElementById('legend-vehicles-ev');
+                if (lev) lev.textContent = evs;
+                const lgv = document.getElementById('legend-vehicles-gas');
+                if (lgv) lgv.textContent = Math.max(0, active - evs);
+                // EV battery distribution
+                let high=0, med=0, low=0;
+                networkState.vehicles.forEach(v=>{
+                    if (v.is_ev) {
+                        const b = v.battery_percent != null ? v.battery_percent : 100;
+                        if (b < 20) low++; else if (b < 50) med++; else high++;
+                    }
+                });
+                const leh = document.getElementById('legend-ev-high'); if (leh) leh.textContent = high;
+                const lem = document.getElementById('legend-ev-medium'); if (lem) lem.textContent = med;
+                const lel = document.getElementById('legend-ev-low'); if (lel) lel.textContent = low;
             }
             
             const controls = document.getElementById('substation-controls');
@@ -2814,11 +3172,134 @@ HTML_COMPLETE_TEMPLATE = '''
         } else {
             vehicleRenderer = new HybridVehicleRenderer(map);
         }
+        if (map.loaded()) {
+            if (!vehicleClickLayerInitialized) initializeVehicleClickLayer();
+            ensureVehicleSymbolLayer();
+        } else {
+            map.on('load', () => {
+                if (!vehicleClickLayerInitialized) initializeVehicleClickLayer();
+                ensureVehicleSymbolLayer();
+            });
+        }
     }
+
+    function ensureVehicleSymbolLayer() {
+        if (!map.getSource('vehicles-symbols')) {
+            map.addSource('vehicles-symbols', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }});
+        }
+        if (!map.getLayer('vehicles-symbols')) {
+            map.addLayer({
+                id: 'vehicles-symbols',
+                type: 'symbol',
+                source: 'vehicles-symbols',
+                layout: {
+                    'text-field': '⬤',
+                    'text-size': [
+                        'interpolate', ['linear'], ['zoom'],
+                        12, 13,
+                        14, 16,
+                        16, 18,
+                        18, 20
+                    ],
+                    'text-allow-overlap': true,
+                    'text-ignore-placement': true
+                },
+                paint: {
+                    'text-color': [
+                        'case', ['to-boolean', ['get', 'is_ev']],
+                        '#2bffb2',
+                        '#ffffff'
+                    ],
+                    'text-halo-color': '#000000',
+                    'text-halo-width': 2
+                }
+            });
+        }
+        try { map.moveLayer('vehicles-symbols'); } catch (e) {}
+    }
+
+    function updateVehicleSymbolLayer() {
+        const src = map.getSource('vehicles-symbols');
+        if (!src || !networkState || !networkState.vehicles) return;
+        const features = networkState.vehicles.map(v => ({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [v.lon, v.lat] },
+            properties: {
+                id: v.id,
+                is_ev: !!v.is_ev,
+                battery_percent: v.battery_percent != null ? Math.round(v.battery_percent) : undefined,
+                is_charging: !!v.is_charging,
+                is_queued: !!v.is_queued,
+                is_stranded: !!v.is_stranded,
+                assigned_station: v.assigned_station || ''
+            }
+        }));
+        src.setData({ type: 'FeatureCollection', features });
+    }
+
+    // Robust global click handler with fallback nearest-vehicle detection
+    map.on('click', async (e) => {
+        // First, try symbol and click layers
+        const layersToQuery = [];
+        if (map.getLayer('vehicles-symbols')) layersToQuery.push('vehicles-symbols');
+        if (map.getLayer('vehicles-click-layer')) layersToQuery.push('vehicles-click-layer');
+        if (layersToQuery.length > 0) {
+            const feats = map.queryRenderedFeatures(e.point, { layers: layersToQuery });
+            if (feats && feats.length > 0) {
+                const p = feats[0].properties || {};
+                const isEV = p.is_ev === 'true' || p.is_ev === true;
+                const battery = p.battery_percent !== undefined ? `${p.battery_percent}%` : '–';
+                const status = (p.is_stranded === 'true' || p.is_stranded === true) ? 'Stranded' : ((p.is_charging === 'true' || p.is_charging === true) ? 'Charging' : ((p.is_queued === 'true' || p.is_queued === true) ? 'Queued' : 'Driving'));
+                const station = p.assigned_station || '—';
+                new mapboxgl.Popup()
+                    .setLngLat(e.lngLat)
+                    .setHTML(`
+                        <strong>Vehicle ${p.id || ''}</strong><br>
+                        Type: ${isEV ? 'Electric' : 'Gas'}<br>
+                        Battery: ${isEV ? battery : 'N/A'}<br>
+                        Status: ${status}<br>
+                        Station: ${isEV ? station : 'N/A'}
+                    `)
+                    .addTo(map);
+                return;
+            }
+        }
+        // Fallback: nearest vehicle by screen distance
+        if (networkState && networkState.vehicles && networkState.vehicles.length > 0) {
+            const clickPt = e.point;
+            let best = null;
+            for (const v of networkState.vehicles) {
+                const pt = map.project([v.lon, v.lat]);
+                const dx = pt.x - clickPt.x;
+                const dy = pt.y - clickPt.y;
+                const d2 = dx*dx + dy*dy;
+                if (!best || d2 < best.d2) best = { v, d2, pt };
+            }
+            const threshold2 = 30 * 30; // 30px radius
+            if (best && best.d2 <= threshold2) {
+                const v = best.v;
+                const isEV = !!v.is_ev;
+                const battery = v.battery_percent != null ? `${Math.round(v.battery_percent)}%` : '–';
+                const status = v.is_stranded ? 'Stranded' : (v.is_charging ? 'Charging' : (v.is_queued ? 'Queued' : 'Driving'));
+                const station = v.assigned_station || '—';
+                new mapboxgl.Popup()
+                    .setLngLat([v.lon, v.lat])
+                    .setHTML(`
+                        <strong>Vehicle ${v.id || ''}</strong><br>
+                        Type: ${isEV ? 'Electric' : 'Gas'}<br>
+                        Battery: ${isEV ? battery : 'N/A'}<br>
+                        Status: ${status}<br>
+                        Station: ${isEV ? station : 'N/A'}
+                    `)
+                    .addTo(map);
+            }
+        }
+    });
 
     function initializeEVStationLayer() {
         if (evStationLayerInitialized) return;
         
+        // Add GeoJSON source for EV stations
         map.addSource('ev-stations', {
             type: 'geojson',
             data: {
@@ -2827,51 +3308,67 @@ HTML_COMPLETE_TEMPLATE = '''
             }
         });
         
+        // CIRCLE BASE with upgraded visuals
         map.addLayer({
             id: 'ev-stations-layer',
             type: 'circle',
             source: 'ev-stations',
             paint: {
                 'circle-radius': [
-                    'interpolate',
-                    ['linear'],
-                    ['zoom'],
-                    12, 6,
-                    14, 8,
-                    16, 10,
-                    18, 14
+                    'interpolate', ['linear'], ['zoom'],
+                    12, 10,
+                    14, 12,
+                    16, 14,
+                    18, 18
                 ],
-                'circle-color': ['get', 'color'],
-                'circle-opacity': 0.95,
-                'circle-stroke-width': 2,
+                'circle-color': [
+                    'case',
+                    ['!', ['get', 'operational']], '#404040',  // Gray when offline
+                    ['>=', ['get', 'charging_count'], 20], '#ff3b3b',
+                    ['>=', ['get', 'charging_count'], 15], '#ff8c42',
+                    ['>=', ['get', 'charging_count'], 10], '#ffcc00',
+                    ['>=', ['get', 'charging_count'], 1], '#00c2ff',
+                    '#00ff88'
+                ],
+                'circle-opacity': 0.98,
+                'circle-stroke-width': 4,
                 'circle-stroke-color': '#ffffff',
-                'circle-stroke-opacity': 0.9
+                'circle-stroke-opacity': 1.0,
+                'circle-blur': 0.35
             }
         });
-
+        
+        // Add the emoji on top - LARGE AND VISIBLE (ensure above base circle)
         map.addLayer({
             id: 'ev-stations-icon',
             type: 'symbol',
             source: 'ev-stations',
             layout: {
-                'text-field': '⚡',
+                'text-field': '⚡',  // Lightning bolt for EV stations
+                // Alternative emojis you can use:
+                // 'text-field': '🔋',  // Battery
+                // 'text-field': '🔌',  // Plug
+                // 'text-field': '⛽',  // Fuel pump
+                // 'text-field': 'EV',  // Simple text
                 'text-size': [
                     'interpolate', ['linear'], ['zoom'],
-                    12, 12,
-                    14, 14,
-                    16, 16,
-                    18, 20
+                    12, 22,
+                    14, 26,
+                    16, 30,
+                    18, 34
                 ],
                 'text-allow-overlap': true,
                 'text-ignore-placement': true
             },
             paint: {
-                'text-color': '#ffffff',
+                'text-color': '#fbfffe',
                 'text-halo-color': '#000000',
-                'text-halo-width': 0.6
+                'text-halo-width': 3
             }
         });
-
+        try { map.moveLayer('ev-stations-icon'); } catch(e) {}
+        
+        // Keep the badge for charging count
         map.addLayer({
             id: 'ev-stations-badge-bg',
             type: 'circle',
@@ -2880,25 +3377,25 @@ HTML_COMPLETE_TEMPLATE = '''
             paint: {
                 'circle-radius': [
                     'interpolate', ['linear'], ['zoom'],
-                    12, 7,
-                    16, 8,
-                    18, 10
+                    12, 10,
+                    16, 11,
+                    18, 12
                 ],
                 'circle-color': [
                     'case',
-                    ['>=', ['get', 'charging_count'], 20], '#ff0000',
-                    ['>=', ['get', 'charging_count'], 15], '#ffa500',
-                    ['>=', ['get', 'charging_count'], 10], '#ffff00',
-                    '#00ff00'
+                    ['>=', ['get', 'charging_count'], 20], '#ff3b3b',
+                    ['>=', ['get', 'charging_count'], 15], '#ff8c42',
+                    ['>=', ['get', 'charging_count'], 10], '#ffcc00',
+                    '#00ff88'
                 ],
                 'circle-stroke-color': '#ffffff',
-                'circle-stroke-width': 2,
+                'circle-stroke-width': 3,
                 'circle-opacity': 1.0,
-                'circle-translate': [10, -10],
+                'circle-translate': [12, -12],
                 'circle-translate-anchor': 'map'
             }
         });
-
+        
         map.addLayer({
             id: 'ev-stations-badge-text',
             type: 'symbol',
@@ -2906,11 +3403,12 @@ HTML_COMPLETE_TEMPLATE = '''
             filter: ['>', ['get', 'charging_count'], 0],
             layout: {
                 'text-field': ['to-string', ['get', 'charging_count']],
+                'text-font': ['Open Sans Bold'],
                 'text-size': [
                     'interpolate', ['linear'], ['zoom'],
-                    12, 11,
-                    16, 12,
-                    18, 14
+                    12, 16,
+                    16, 18,
+                    18, 20
                 ],
                 'text-allow-overlap': true,
                 'text-ignore-placement': true
@@ -2918,78 +3416,180 @@ HTML_COMPLETE_TEMPLATE = '''
             paint: {
                 'text-color': '#ffffff',
                 'text-halo-color': '#000000',
-                'text-halo-width': 0.6,
-                'text-translate': [10, -10],
+                'text-halo-width': 2.2,
+                'text-translate': [12, -12],
                 'text-translate-anchor': 'map'
             }
         });
         
-        function onEVClick(e) {
-            const props = e.features[0].properties;
+        // Click handlers for all layers
+        ['ev-stations-layer', 'ev-stations-badge-bg', 'ev-stations-badge-text', 'ev-stations-icon'].forEach(layerId => {
+            map.on('click', layerId, (e) => {
+                const props = e.features[0].properties;
+                
+                const chargingText = props.charging_count > 0 ? 
+                    `<span style="color: #00ffff">⚡ Charging: ${props.charging_count}/20</span>` : 
+                    '<span>⚡ Charging: 0/20</span>';
+                
+                new mapboxgl.Popup()
+                    .setLngLat(e.lngLat)
+                    .setHTML(`
+                        <strong>${props.name}</strong><br>
+                        Status: <span style="color: ${props.operational ? '#00ff88' : '#ff0000'}">
+                            ${props.operational ? '✅ Online' : '❌ Offline'}
+                        </span><br>
+                        ${chargingText}<br>
+                        Capacity: ${props.chargers} chargers<br>
+                        Substation: ${props.substation}
+                    `)
+                    .addTo(map);
+            });
             
+            map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
+            map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
+        });
+        
+        evStationLayerInitialized = true;
+    }
+
+    function initializeVehicleClickLayer() {
+        if (vehicleClickLayerInitialized) return;
+        map.addSource('vehicles-click', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] }
+        });
+        map.addLayer({
+            id: 'vehicles-click-layer',
+            type: 'circle',
+            source: 'vehicles-click',
+            paint: {
+                'circle-radius': [
+                    'interpolate', ['linear'], ['zoom'],
+                    12, 18,
+                    16, 22,
+                    18, 26
+                ],
+                'circle-color': '#000000',
+                'circle-opacity': 0.001,
+                'circle-stroke-width': 0
+            }
+        });
+        // Ensure click layer is on top for reliable hit testing
+        try { map.moveLayer('vehicles-click-layer'); } catch (e) {}
+        map.on('click', 'vehicles-click-layer', (e) => {
+            const p = e.features[0].properties || {};
+            const isEV = p.is_ev === 'true' || p.is_ev === true;
+            const battery = p.battery_percent !== undefined ? `${p.battery_percent}%` : '–';
+            const status = (p.is_charging === 'true' || p.is_charging === true) ? 'Charging' : ((p.is_queued === 'true' || p.is_queued === true) ? 'Queued' : ((p.is_stranded === 'true' || p.is_stranded === true) ? 'Stranded' : 'Driving'));
+            const station = p.assigned_station || '—';
             new mapboxgl.Popup()
                 .setLngLat(e.lngLat)
                 .setHTML(`
-                    <strong>${props.name}</strong><br>
-                    Status: <span style="color: ${props.operational ? '#00ff88' : '#ff0000'}">
-                        ${props.operational ? '✅ Online' : '❌ Offline'}
-                    </span><br>
-                    ⚡ Charging: ${props.charging_count}/20<br>
-                    Capacity: ${props.chargers} chargers<br>
-                    Substation: ${props.substation}
+                    <strong>Vehicle ${p.id || ''}</strong><br>
+                    Type: ${isEV ? 'Electric' : 'Gas'}<br>
+                    Battery: ${isEV ? battery : 'N/A'}<br>
+                    Status: ${status}<br>
+                    Station: ${isEV ? station : 'N/A'}
                 `)
                 .addTo(map);
-        }
-        
-        map.on('click', 'ev-stations-layer', onEVClick);
-        map.on('click', 'ev-stations-icon', onEVClick);
-        
-        evStationLayerInitialized = true;
+        });
+        map.on('mouseenter', 'vehicles-click-layer', () => { map.getCanvas().style.cursor = 'pointer'; });
+        map.on('mouseleave', 'vehicles-click-layer', () => { map.getCanvas().style.cursor = ''; });
+        vehicleClickLayerInitialized = true;
     }
 
     function renderNetwork() {
         if (!networkState) return;
         
-        networkState.substations.forEach(sub => {
-            if (!substationMarkers[sub.name]) {
-                const el = document.createElement('div');
-                el.className = 'substation-marker';
-                el.style.cssText = `
-                    width: 30px;
-                    height: 30px;
-                    border-radius: 50%;
-                    border: 3px solid white;
-                    cursor: pointer;
-                    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-                `;
-                
-                const marker = new mapboxgl.Marker(el)
-                    .setLngLat([sub.lon, sub.lat])
-                    .setPopup(new mapboxgl.Popup({offset: 25}))
-                    .addTo(map);
-                
-                substationMarkers[sub.name] = marker;
+        // Substations as a proper Mapbox layer for correct stacking order
+        const substationFeatures = networkState.substations.map(sub => ({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [sub.lon, sub.lat] },
+            properties: {
+                name: sub.name,
+                capacity_mva: sub.capacity_mva,
+                load_mw: sub.load_mw,
+                operational: !!sub.operational,
+                coverage_area: sub.coverage_area,
+                color: sub.operational ? '#ff0066' : '#666666'
             }
-            
-            const el = substationMarkers[sub.name].getElement();
-            el.style.background = sub.operational ? 
-                'radial-gradient(circle, #ff0066 40%, #cc0052 100%)' :
-                'radial-gradient(circle, #ff0000 40%, #aa0000 100%)';
-            el.style.boxShadow = sub.operational ?
-                '0 0 30px rgba(255,0,102,0.9)' :
-                '0 0 30px rgba(255,0,0,0.9)';
-                
-            substationMarkers[sub.name].setPopup(new mapboxgl.Popup({offset: 25}).setHTML(`
-                <strong>${sub.name}</strong><br>
-                Capacity: ${sub.capacity_mva} MVA<br>
-                Load: ${sub.load_mw.toFixed(1)} MW<br>
-                Status: <span style="color: ${sub.operational ? '#00ff88' : '#ff0000'}">
-                    ${sub.operational ? '⚡ ONLINE' : '⚠️ FAILED'}
-                </span><br>
-                Coverage: ${sub.coverage_area}
-            `));
-        });
+        }));
+        if (!substationLayerInitialized && map.loaded()) {
+            if (!map.getSource('substations')) {
+                map.addSource('substations', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }});
+            }
+            if (!map.getLayer('substations-layer')) {
+                map.addLayer({
+                    id: 'substations-layer',
+                    type: 'symbol',
+                    source: 'substations',
+                    layout: {
+                        'text-field': '▲',
+                        'text-size': [
+                            'interpolate', ['linear'], ['zoom'],
+                            12, 42,
+                            14, 48,
+                            16, 54
+                        ],
+                        'text-allow-overlap': true,
+                        'text-ignore-placement': true
+                    },
+                    paint: {
+                        'text-color': ['get', 'color'],
+                        'text-halo-color': '#ffffff',
+                        'text-halo-width': 3,
+                        'text-halo-blur': 0.8
+                    }
+                });
+                // Add lightning icon on top of triangle
+                map.addLayer({
+                    id: 'substations-icon',
+                    type: 'symbol',
+                    source: 'substations',
+                    layout: {
+                        'text-field': '⚡',
+                        'text-size': [
+                            'interpolate', ['linear'], ['zoom'],
+                            12, 20,
+                            14, 22,
+                            16, 24
+                        ],
+                        'text-allow-overlap': true,
+                        'text-ignore-placement': true
+                    },
+                    paint: {
+                        'text-color': '#fffcf2',
+                        'text-halo-color': '#000000',
+                        'text-halo-width': 1.5
+                    }
+                });
+                // Click popup for both layers
+                ['substations-layer', 'substations-icon'].forEach(layerId => {
+                    map.on('click', layerId, (e) => {
+                        const p = e.features[0].properties || {};
+                        const load = parseFloat(p.load_mw || 0);
+                        new mapboxgl.Popup({ offset: 25 })
+                            .setLngLat(e.lngLat)
+                            .setHTML(`
+                                <strong>${p.name}</strong><br>
+                                Capacity: ${p.capacity_mva} MVA<br>
+                                Load: ${isNaN(load) ? '-' : load.toFixed(1)} MW<br>
+                                Status: <span style="color: ${p.operational === 'true' || p.operational === true ? '#00ff88' : '#ff0000'}">${p.operational === 'true' || p.operational === true ? '⚡ ONLINE' : '⚠️ FAILED'}</span><br>
+                                Coverage: ${p.coverage_area}
+                            `)
+                            .addTo(map);
+                    });
+                    map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer'; });
+                    map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = ''; });
+                });
+            }
+            substationLayerInitialized = true;
+        }
+        if (map.getSource('substations')) {
+            map.getSource('substations').setData({ type: 'FeatureCollection', features: substationFeatures });
+        }
         
+        // Cables - Primary
         if (networkState.cables) {
             if (networkState.cables.primary) {
                 const primaryFeatures = networkState.cables.primary
@@ -3005,21 +3605,36 @@ HTML_COMPLETE_TEMPLATE = '''
                 } else {
                     map.addSource('primary-cables', { type: 'geojson', data: primaryData });
                     map.addLayer({
+                        id: 'primary-cables-glow',
+                        type: 'line',
+                        source: 'primary-cables',
+                        paint: {
+                            'line-color': ['case', ['get', 'operational'], '#00ff88', '#ff3366'],
+                            'line-width': 8,
+                            'line-opacity': 0.15,
+                            'line-blur': 1.2
+                        }
+                    });
+                    map.addLayer({
                         id: 'primary-cables',
                         type: 'line',
                         source: 'primary-cables',
                         paint: {
-                            'line-color': ['case', ['get', 'operational'], '#00ff88', '#ff0000'],
-                            'line-width': 3,
-                            'line-opacity': 0.7
+                            'line-color': ['case', ['get', 'operational'], '#00ffcc', '#ff3b3b'],
+                            'line-width': 3.2,
+                            'line-opacity': 0.9
                         }
                     });
                 }
                 if (map.getLayer('primary-cables')) {
                     map.setLayoutProperty('primary-cables', 'visibility', layers.primary ? 'visible' : 'none');
                 }
+                if (map.getLayer('primary-cables-glow')) {
+                    map.setLayoutProperty('primary-cables-glow', 'visibility', layers.primary ? 'visible' : 'none');
+                }
             }
             
+            // Cables - Secondary
             if (networkState.cables.secondary) {
                 const secondaryFeatures = (layers.secondary ? networkState.cables.secondary : [])
                     .filter(cable => cable.path && cable.path.length > 1)
@@ -3034,22 +3649,37 @@ HTML_COMPLETE_TEMPLATE = '''
                 } else {
                     map.addSource('secondary-cables', { type: 'geojson', data: secondaryData });
                     map.addLayer({
+                        id: 'secondary-cables-glow',
+                        type: 'line',
+                        source: 'secondary-cables',
+                        paint: {
+                            'line-color': '#ffcc66',
+                            'line-width': 3.5,
+                            'line-opacity': 0.12,
+                            'line-blur': 0.8
+                        }
+                    });
+                    map.addLayer({
                         id: 'secondary-cables',
                         type: 'line',
                         source: 'secondary-cables',
                         paint: {
-                            'line-color': '#ffaa00',
-                            'line-width': 0.8,
-                            'line-opacity': ['case', ['get', 'operational'], 0.45, 0.15]
+                            'line-color': '#ffbb44',
+                            'line-width': 1.2,
+                            'line-opacity': ['case', ['get', 'operational'], 0.7, 0.25]
                         }
                     });
                 }
                 if (map.getLayer('secondary-cables')) {
                     map.setLayoutProperty('secondary-cables', 'visibility', layers.secondary ? 'visible' : 'none');
                 }
+                if (map.getLayer('secondary-cables-glow')) {
+                    map.setLayoutProperty('secondary-cables-glow', 'visibility', layers.secondary ? 'visible' : 'none');
+                }
             }
         }
         
+        // Traffic Lights
         if (networkState.traffic_lights) {
             const features = (layers.lights ? networkState.traffic_lights : []).map(tl => ({
                 type: 'Feature',
@@ -3071,12 +3701,12 @@ HTML_COMPLETE_TEMPLATE = '''
                     type: 'circle',
                     source: 'traffic-lights',
                     paint: {
-                        'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 2, 14, 3, 16, 5],
+                        'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 2.5, 14, 3.5, 16, 5.5],
                         'circle-color': ['get', 'color'],
-                        'circle-opacity': 0.9,
-                        'circle-stroke-width': 0.5,
+                        'circle-opacity': 0.95,
+                        'circle-stroke-width': 0.8,
                         'circle-stroke-color': '#ffffff',
-                        'circle-stroke-opacity': 0.3
+                        'circle-stroke-opacity': 0.45
                     }
                 });
             }
@@ -3102,9 +3732,11 @@ HTML_COMPLETE_TEMPLATE = '''
                 map.setLayoutProperty('traffic-lights', 'visibility', layers.lights ? 'visible' : 'none');
             }
         }
+        // Update vehicle symbol overlay every render
+        updateVehicleSymbolLayer();
     }
 
-    function renderEVStations() {
+   function renderEVStations() {
         if (!networkState || !networkState.ev_stations) {
             if (map.getLayer('ev-stations-layer')) {
                 map.setLayoutProperty('ev-stations-layer', 'visibility', 'none');
@@ -3118,23 +3750,17 @@ HTML_COMPLETE_TEMPLATE = '''
         
         if (!map.getSource('ev-stations')) return;
         
-        ['ev-stations-layer','ev-stations-icon','ev-stations-badge-bg','ev-stations-badge-text'].forEach(id => {
-            if (map.getLayer(id)) {
-                map.setLayoutProperty(id, 'visibility', layers.ev ? 'visible' : 'none');
-            }
-        });
-        
+        // Create point features for the circles
         const features = networkState.ev_stations.map(ev => {
             let chargingCount = ev.vehicles_charging || 0;
             let queuedCount = ev.vehicles_queued || 0;
             
+            // Fallback: count from vehicles if backend didn't provide
             if (chargingCount === 0 && networkState.vehicles) {
                 chargingCount = networkState.vehicles.filter(v => 
                     v.is_charging && v.assigned_station === ev.id
                 ).length;
             }
-            
-            let color = ev.operational ? '#00aaff' : '#666';
             
             return {
                 type: 'Feature',
@@ -3149,12 +3775,12 @@ HTML_COMPLETE_TEMPLATE = '''
                     charging_count: chargingCount,
                     queued_count: queuedCount,
                     operational: ev.operational,
-                    substation: ev.substation,
-                    color: color
+                    substation: ev.substation
                 }
             };
         });
         
+        // Update the source
         const source = map.getSource('ev-stations');
         if (source) {
             source.setData({
@@ -3162,6 +3788,13 @@ HTML_COMPLETE_TEMPLATE = '''
                 features: features
             });
         }
+        
+        // Show/hide layers based on toggle
+        ['ev-stations-layer', 'ev-stations-badge-bg', 'ev-stations-badge-text', 'ev-stations-icon'].forEach(id => {
+            if (map.getLayer(id)) {
+                map.setLayoutProperty(id, 'visibility', layers.ev ? 'visible' : 'none');
+            }
+        });
     }
 
     // ==========================================
@@ -3187,6 +3820,31 @@ HTML_COMPLETE_TEMPLATE = '''
         } else {
             alert('Failed to start SUMO: ' + result.message);
         }
+        enforceLayerOrder();
+    }
+
+    function enforceLayerOrder() {
+        // Desired back-to-front (bottom → top): cables → traffic lights → cars → substations → EV stations
+        const bottomToTop = [
+            'primary-cables-glow',
+            'primary-cables',
+            'secondary-cables-glow',
+            'secondary-cables',
+            'traffic-lights',
+            // Cars (all vehicle layers)
+            'vehicle-webgl-layer',
+            'vehicles-symbols',
+            'vehicles-click-layer',
+            // Substations
+            'substations-layer',
+            'substations-icon',
+            // EV stations (all parts)
+            'ev-stations-layer',
+            'ev-stations-icon',
+            'ev-stations-badge-bg',
+            'ev-stations-badge-text'
+        ];
+        bottomToTop.forEach(id => { try { if (map.getLayer(id)) map.moveLayer(id); } catch (e) {} });
     }
 
     async function stopSUMO() {
@@ -3282,6 +3940,7 @@ HTML_COMPLETE_TEMPLATE = '''
                 vehicleRenderer.updateVehicles(networkState.vehicles);
             }
             renderEVStations();
+            updateVehicleSymbolLayer();
         } catch (error) {
             console.error('Error loading network state:', error);
         }
@@ -3308,6 +3967,12 @@ HTML_COMPLETE_TEMPLATE = '''
             }
             if (!layers[layer] && vehicleRenderer) {
                 vehicleRenderer.clear();
+            }
+            if (map.getLayer('vehicles-symbols')) {
+                map.setLayoutProperty('vehicles-symbols', 'visibility', layers[layer] ? 'visible' : 'none');
+            }
+            if (map.getLayer('vehicles-click-layer')) {
+                map.setLayoutProperty('vehicles-click-layer', 'visibility', layers[layer] ? 'visible' : 'none');
             }
         } else if (layer === 'ev') {
             renderNetwork();
@@ -3561,8 +4226,6 @@ HTML_COMPLETE_TEMPLATE = '''
         initializeRenderers();
         initializeEVStationLayer();
         
-        // Initialize vehicle renderer
-        vehicleRenderer = new WebGLVehicleRenderer(map);
         
         // Start update loop
         updateLoop();
